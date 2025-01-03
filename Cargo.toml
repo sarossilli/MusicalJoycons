@@ -1,0 +1,11 @@
+[package]
+name = "musical-joycons"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+
+[[bin]]
+name = "musicalJoycons"
+path = "src/main.rs"
