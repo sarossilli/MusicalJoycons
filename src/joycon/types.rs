@@ -1,6 +1,6 @@
 pub(crate) const VENDOR_ID: u16 = 0x057e;
-pub(crate) const JOYCON_L_BT: u16 = 0x2006;
-pub(crate) const JOYCON_R_BT: u16 = 0x2007;
+pub const JOYCON_L_BT: u16 = 0x2006;
+pub const JOYCON_R_BT: u16 = 0x2007;
 pub(crate) const PRO_CONTROLLER: u16 = 0x2009;
 pub(crate) const JOYCON_CHARGING_GRIP: u16 = 0x200e;
 
@@ -25,7 +25,7 @@ pub enum JoyConType {
     ProController,
 }
 
-pub(crate) struct DeviceInfo {
+pub struct DeviceInfo {
     pub product_id: u16,
     pub interface_number: i32,
     pub serial: String,

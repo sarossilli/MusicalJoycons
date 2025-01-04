@@ -29,7 +29,7 @@ impl JoyconInterface {
         joycon.increment_timing_byte();
         Ok(())
     }
-
+    
     pub fn send_rumble(
         joycon: &mut JoyCon,
         frequency: f32,
@@ -78,10 +78,10 @@ impl JoyconInterface {
         };
 
         // Write the encoded values to the correct bytes
-        buf[offset] = (hf & 0xFF) as u8; // Low byte of HF
-        buf[offset + 1] = hf_amp; // High frequency amplitude
-        buf[offset + 2] = lf; // Low frequency
-        buf[offset + 3] = lf_amp; // Low frequency amplitude
+        buf[offset] = (hf & 0xFF) as u8;     // Low byte of HF
+        buf[offset + 1] = hf_amp;            // High frequency amplitude
+        buf[offset + 2] = lf;                // Low frequency
+        buf[offset + 3] = lf_amp;            // Low frequency amplitude
 
         // Fill in the other side with neutral data
         let other_offset = if offset == 2 { 6 } else { 2 };
@@ -89,15 +89,9 @@ impl JoyconInterface {
 
         // Debug output
         println!("Rumble data:");
-        println!(
-            "Frequency: {:.2} Hz -> encoded: 0x{:02x}",
-            frequency, encoded_freq
-        );
+        println!("Frequency: {:.2} Hz -> encoded: 0x{:02x}", frequency, encoded_freq);
         println!("HF: 0x{:04x}, LF: 0x{:02x}", hf, lf);
-        println!(
-            "Amplitude: {:.2} -> encoded: 0x{:02x}",
-            amplitude, encoded_amp
-        );
+        println!("Amplitude: {:.2} -> encoded: 0x{:02x}", amplitude, encoded_amp);
         println!("HF_amp: 0x{:02x}, LF_amp: 0x{:02x}", hf_amp, lf_amp);
 
         Self::write_to_joycon(joycon, &buf)?;

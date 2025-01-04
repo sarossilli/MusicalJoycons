@@ -92,7 +92,7 @@ impl JoyCon {
     }
 
     // Getters and setters
-    pub(crate) fn get_handle(&self) -> Option<&HidDevice> {
+    pub fn get_handle(&self) -> Option<&HidDevice> {
         self.handle.as_ref()
     }
 
@@ -100,11 +100,11 @@ impl JoyCon {
         self.handle = Some(device);
     }
 
-    pub(crate) fn get_type(&self) -> JoyConType {
+    pub fn get_type(&self) -> JoyConType {
         self.device_type
     }
 
-    pub(crate) fn get_timing_byte(&self) -> u8 {
+    pub fn get_timing_byte(&self) -> u8 {
         self.timing_byte
     }
 
