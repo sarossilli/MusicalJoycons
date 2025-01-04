@@ -1,8 +1,12 @@
+use crate::midi::rubmle::RumbleTrack;
+
 // src/joycon/joycon.rs
 use super::interface::JoyconInterface;
 use super::types::{Command, DeviceInfo, JoyConError, JoyConType, Subcommand};
 use hidapi::HidDevice;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 pub struct JoyCon {
     handle: Option<HidDevice>,
@@ -33,9 +37,9 @@ impl JoyCon {
 
     // Public interface
     pub fn rumble(&mut self, frequency: f32, amplitude: f32) -> Result<(), JoyConError> {
-        if !(0.0..=1252.0).contains(&frequency) {
+        if !(0.0..=2252.0).contains(&frequency) {
             return Err(JoyConError::InvalidRumble(
-                "Frequency out of range (0-1252 Hz)",
+                "Frequency out of range (0-2252 Hz)",
             ));
         }
         if !(0.0..=1.0).contains(&amplitude) {
@@ -68,9 +72,9 @@ impl JoyCon {
         ];
 
         // Duration for each note
-        let note_duration = Duration::from_millis(500);
+        let note_duration = Duration::from_millis(100);
         // Short pause between notes
-        let pause_duration = Duration::from_millis(500);
+        let pause_duration = Duration::from_millis(10);
 
         for &frequency in scale.iter() {
             // Play the note
@@ -84,6 +88,36 @@ impl JoyCon {
 
         // Ensure rumble is off at the end
         self.rumble(0.0, 0.0)
+    }
+
+    pub fn play_rumble_track(&mut self, track: RumbleTrack) -> Result<(), JoyConError> {
+        println!("Track duration: {:?}", track.total_duration);
+
+        for command in track.commands {
+            if !command.wait_before.is_zero() {
+                thread::sleep(command.wait_before);
+            }
+
+            // Play the note
+            self.rumble(command.frequency, command.amplitude)?;
+        }
+
+        // Stop rumble at the end
+        self.rumble(0.0, 0.0)?;
+        Ok(())
+    }
+
+    pub fn play_synchronized(
+        &mut self,
+        track: RumbleTrack,
+        start_signal: Arc<Mutex<bool>>,
+    ) -> Result<(), JoyConError> {
+        // Wait for the start signal
+        while !*start_signal.lock().unwrap() {
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        self.play_rumble_track(track)
     }
 
     pub fn initialize_device(&mut self) -> Result<(), JoyConError> {

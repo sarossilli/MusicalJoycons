@@ -29,7 +29,7 @@ impl JoyconInterface {
         joycon.increment_timing_byte();
         Ok(())
     }
-    
+
     pub fn send_rumble(
         joycon: &mut JoyCon,
         frequency: f32,
@@ -40,7 +40,7 @@ impl JoyconInterface {
         buf[1] = joycon.get_timing_byte();
 
         // First encode the frequency - clamp to valid range and calculate encoded value
-        let frequency = frequency.clamp(0.0, 1252.0);
+        let frequency = frequency.clamp(0.0, 2252.0);
         let encoded_freq = if frequency > 0.0 {
             ((frequency / 10.0).log2() * 32.0).round() as u8
         } else {
@@ -78,51 +78,19 @@ impl JoyconInterface {
         };
 
         // Write the encoded values to the correct bytes
-        buf[offset] = (hf & 0xFF) as u8;     // Low byte of HF
-        buf[offset + 1] = hf_amp;            // High frequency amplitude
-        buf[offset + 2] = lf;                // Low frequency
-        buf[offset + 3] = lf_amp;            // Low frequency amplitude
+        buf[offset] = (hf & 0xFF) as u8; // Low byte of HF
+        buf[offset + 1] = hf_amp; // High frequency amplitude
+        buf[offset + 2] = lf; // Low frequency
+        buf[offset + 3] = lf_amp; // Low frequency amplitude
 
         // Fill in the other side with neutral data
         let other_offset = if offset == 2 { 6 } else { 2 };
         buf[other_offset..other_offset + 4].copy_from_slice(&[0x00, 0x01, 0x40, 0x40]);
-
-        // Debug output
-        println!("Rumble data:");
-        println!("Frequency: {:.2} Hz -> encoded: 0x{:02x}", frequency, encoded_freq);
-        println!("HF: 0x{:04x}, LF: 0x{:02x}", hf, lf);
-        println!("Amplitude: {:.2} -> encoded: 0x{:02x}", amplitude, encoded_amp);
-        println!("HF_amp: 0x{:02x}, LF_amp: 0x{:02x}", hf_amp, lf_amp);
-
         Self::write_to_joycon(joycon, &buf)?;
         joycon.increment_timing_byte();
         Ok(())
     }
-
-    fn encode_rumble_params(frequency: f32, amplitude: f32) -> (u8, u8, u8, u8) {
-        let encoded_hex_freq = if frequency > 0.0 {
-            ((frequency.clamp(0.0, 1252.0) / 10.0).log2() * 32.0).round() as u8
-        } else {
-            0
-        };
-
-        let hf = encoded_hex_freq.saturating_sub(0x60).saturating_mul(4);
-        let lf = encoded_hex_freq.saturating_sub(0x40);
-
-        let encoded_hex_amp = if amplitude > 0.23 {
-            ((amplitude.clamp(0.0, 1.0) * 8.7).log2() * 32.0).round() as u8
-        } else if amplitude > 0.12 {
-            ((amplitude.clamp(0.0, 1.0) * 17.0).log2() * 16.0).round() as u8
-        } else {
-            ((amplitude.clamp(0.0, 1.0) * 17.0).log2() * 16.0).round() as u8
-        };
-
-        let hf_amp = encoded_hex_amp.saturating_mul(2);
-        let lf_amp = encoded_hex_amp.saturating_div(2).saturating_add(0x40);
-
-        (hf, lf, hf_amp, lf_amp)
-    }
-
+    
     fn write_to_joycon(joycon: &JoyCon, buf: &[u8]) -> Result<(), JoyConError> {
         let handle = joycon.get_handle().ok_or(JoyConError::NotConnected)?;
 
