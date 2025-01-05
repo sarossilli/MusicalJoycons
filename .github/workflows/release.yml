@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: musical-joycons
+            asset_name: musical-joycons-linux-amd64
+          - os: windows-latest
+            artifact_name: musical-joycons.exe
+            asset_name: musical-joycons-windows-amd64.exe
+          - os: macos-latest
+            artifact_name: musical-joycons
+            asset_name: musical-joycons-macos-amd64
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install system dependencies (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libudev-dev libusb-1.0-0-dev pkg-config
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      
+    - name: Build
+      run: cargo build --release
+      
+    - name: Run tests
+      run: cargo test --release
+      
+    - name: Prepare binary
+      shell: bash
+      run: |
+        mkdir -p release
+        if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          cp target/release/musicalJoycons.exe release/${{ matrix.asset_name }}
+        else
+          cp target/release/musicalJoycons release/${{ matrix.asset_name }}
+        fi
+        
+    - name: Upload binary
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ matrix.asset_name }}
+        path: release/${{ matrix.asset_name }}
+        
+  create_release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+        
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            musical-joycons-linux-amd64
+            musical-joycons-windows-amd64.exe
+            musical-joycons-macos-amd64
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
