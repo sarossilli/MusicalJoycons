@@ -39,8 +39,7 @@ impl JoyconInterface {
         buf[0] = Command::Rumble as u8;
         buf[1] = joycon.get_timing_byte();
 
-        // First encode the frequency - clamp to valid range and calculate encoded value
-        let frequency = frequency.clamp(0.0, 2252.0);
+        let frequency = frequency.clamp(0.0, 1252.0);
         let encoded_freq = if frequency > 0.0 {
             ((frequency / 10.0).log2() * 32.0).round() as u8
         } else {
@@ -67,7 +66,6 @@ impl JoyconInterface {
             ((amplitude * 17.0).log2() * 16.0).round() as u8
         };
 
-        // Convert to final amplitude values
         let hf_amp = encoded_amp.saturating_mul(2);
         let lf_amp = encoded_amp.saturating_div(2).saturating_add(0x40);
 
@@ -77,7 +75,6 @@ impl JoyconInterface {
             _ => 2,                 // Left JoyCon/Pro Controller data starts at byte 2
         };
 
-        // Write the encoded values to the correct bytes
         buf[offset] = (hf & 0xFF) as u8; // Low byte of HF
         buf[offset + 1] = hf_amp; // High frequency amplitude
         buf[offset + 2] = lf; // Low frequency
@@ -90,7 +87,7 @@ impl JoyconInterface {
         joycon.increment_timing_byte();
         Ok(())
     }
-    
+
     fn write_to_joycon(joycon: &JoyCon, buf: &[u8]) -> Result<(), JoyConError> {
         let handle = joycon.get_handle().ok_or(JoyConError::NotConnected)?;
 

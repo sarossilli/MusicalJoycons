@@ -10,11 +10,9 @@ const MAX_RETRIES: u32 = 5;
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Print welcome message
     println!("🎮 Musical JoyCons - MIDI Player");
     println!("===============================");
 
-    // Get MIDI file path from user
     print!("Enter the path to your MIDI file: ");
     io::stdout().flush()?;
 
@@ -29,30 +27,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     play_midi_file(path)?;
 
-    println!("\nPress Enter to exit...");
-    input.clear();
-    io::stdin().read_line(&mut input)?;
-
     Ok(())
 }
 
-fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    // Read and parse the MIDI file
-    println!("🎵 Loading MIDI file: {:?}", path);
-    let midi_data = std::fs::read(path)?;
-    let (primary_track, secondary_track) = parse_midi_to_rumble(&midi_data)?;
+fn get_user_track_selection(track_count: usize, prompt: &str) -> Option<usize> {
+    println!("\n{}", prompt);
+    println!("Enter track number or press Enter for automatic selection:");
 
-    println!(
-        "✨ Primary track duration: {:?}",
-        primary_track.total_duration
-    );
-    if let Some(ref secondary) = secondary_track {
-        println!(
-            "✨ Secondary track duration: {:?}",
-            secondary.total_duration
-        );
+    io::stdout().flush().ok();
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).ok()?;
+
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
     }
 
+    match input.parse::<usize>() {
+        Ok(index) if index < track_count => Some(index),
+        _ => {
+            println!("❌ Invalid track number, using automatic selection");
+            None
+        }
+    }
+}
+
+fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     // Connect to JoyCons
     let mut joycons = connect_to_joycons()?;
     let mut right_joycon = None;
@@ -65,7 +65,56 @@ fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             JoyConType::Left => left_joycon = Some(joycon),
             _ => println!("⚠️ Unsupported controller type detected"),
         }
-    } // Create synchronization signal with countdown
+    }
+
+    println!("🎵 Loading MIDI file: {:?}", path);
+    let midi_data = std::fs::read(&path)?;
+
+    // First parse to show track information and get track count
+    let (primary_track, _) = parse_midi_to_rumble(&midi_data, None, None)?;
+
+    // Get track count from output
+    println!("\nWould you like to select specific tracks? y/n (Press Enter to skip)");
+    println!("Note: Automatic selection will choose the best tracks for each JoyCon");
+
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+
+    let (primary_selection, secondary_selection) = if input.trim().is_empty() {
+        (None, None)
+    } else {
+        let primary = get_user_track_selection(
+            primary_track.commands.len(),
+            "Select primary track for Right JoyCon:",
+        );
+        let secondary = if primary.is_some() {
+            get_user_track_selection(
+                primary_track.commands.len(),
+                "Select secondary track for Left JoyCon (optional):",
+            )
+        } else {
+            None
+        };
+        (primary, secondary)
+    };
+
+    // Parse again with user selections
+    let (primary_track, secondary_track) =
+        parse_midi_to_rumble(&midi_data, primary_selection, secondary_selection)?;
+
+    println!(
+        "✨ Primary track duration: {:?}",
+        primary_track.total_duration
+    );
+    if let Some(ref secondary) = secondary_track {
+        println!(
+            "✨ Secondary track duration: {:?}",
+            secondary.total_duration
+        );
+    }
+
+    // Create synchronization signal
     let start_signal = Arc::new(Mutex::new(false));
     let mut handles = Vec::new();
 
@@ -88,8 +137,12 @@ fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             }));
         }
     }
+
+    // Start playback
+    println!("\n▶️ Starting playback...");
     *start_signal.lock().unwrap() = true;
 
+    // Wait for all tracks to complete
     for handle in handles {
         handle.join().unwrap()?;
     }
@@ -127,8 +180,8 @@ fn connect_to_joycons() -> Result<Vec<JoyCon>, JoyConError> {
 }
 
 fn print_retry_message(tries: u32) {
-    println!("❌ No JoyCons found. Are they in pairing mode?");
-    println!("   - Press the sync button on your JoyCon");
+    println!("❌ No JoyCons found. Are they connected to your PC?");
+    println!("   - Check you bluetooth devices connected");
     println!("   - Make sure the JoyCon is charged");
     println!(
         "Retrying in {} seconds... (Attempt {}/{})",

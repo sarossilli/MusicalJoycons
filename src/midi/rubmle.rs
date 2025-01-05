@@ -1,5 +1,4 @@
-// src/midi/rumble.rs
-use super::track_analysis::{analyze_track, TrackMetrics};
+use crate::midi::{track_analysis::analyze_track, track_types::TrackMetrics};
 use midly::{Smf, Track, TrackEventKind};
 use std::time::Duration;
 use thiserror::Error;
@@ -34,7 +33,7 @@ struct TempoChange {
 }
 
 const BASE_FREQUENCY: f32 = 880.0; // A5 note frequency (up one octave from A4)
-const MIDI_A4_NOTE: i32 = 57; // MIDI note number for A4
+const MIDI_A4_NOTE: i32 = 69; // MIDI note number for A4
 const DEFAULT_TEMPO: u32 = 500_000; // Default tempo (120 BPM)
 const BASE_AMPLITUDE: f32 = 1.0; // Base amplitude for notes
 
@@ -108,8 +107,6 @@ fn convert_track_with_tempo(
 
     for event in track.iter() {
         let delta_ticks = event.delta.as_int() as u32;
-
-        // Handle time delay before the event
         if delta_ticks > 0 {
             let wait_duration = ticks_to_duration(
                 current_time_ticks,
@@ -118,9 +115,7 @@ fn convert_track_with_tempo(
                 ticks_per_beat,
             );
 
-            // Always create a wait command if there's a time delay
             if !wait_duration.is_zero() {
-                // Get current note state
                 let (frequency, amplitude) = if active_notes.is_empty() {
                     (0.0, 0.0)
                 } else {
@@ -148,7 +143,6 @@ fn convert_track_with_tempo(
                     let amplitude = (f32::from(vel.as_int()) / 127.0) * BASE_AMPLITUDE;
                     active_notes.push((key.as_int(), amplitude));
 
-                    // Only add a new command if we haven't just added a wait command
                     if !last_event_had_wait || !commands.is_empty() {
                         commands.push(RumbleCommand {
                             frequency,
@@ -156,7 +150,6 @@ fn convert_track_with_tempo(
                             wait_before: Duration::ZERO,
                         });
                     } else {
-                        // Update the last wait command with the new note
                         if let Some(last_command) = commands.last_mut() {
                             last_command.frequency = frequency;
                             last_command.amplitude = amplitude;
@@ -165,10 +158,7 @@ fn convert_track_with_tempo(
                     last_event_had_wait = false;
                 }
                 midly::MidiMessage::NoteOff { key, vel } => {
-                    // Remove the note
                     active_notes.retain(|(note, _)| *note != key.as_int());
-
-                    // Calculate new state after note removal
                     let (frequency, amplitude) = if active_notes.is_empty() {
                         (0.0, 0.0)
                     } else {
@@ -178,7 +168,6 @@ fn convert_track_with_tempo(
                         )
                     };
 
-                    // Only add a new command if we haven't just added a wait command
                     if !last_event_had_wait {
                         commands.push(RumbleCommand {
                             frequency,
@@ -186,7 +175,6 @@ fn convert_track_with_tempo(
                             wait_before: Duration::ZERO,
                         });
                     } else {
-                        // Update the last wait command with the new state
                         if let Some(last_command) = commands.last_mut() {
                             last_command.frequency = frequency;
                             last_command.amplitude = amplitude;
@@ -199,11 +187,8 @@ fn convert_track_with_tempo(
             _ => {}
         }
     }
-
-    // Ensure we end with silence and the proper duration
     let final_duration = ticks_to_duration(0, current_time_ticks, tempo_changes, ticks_per_beat);
 
-    // Add final silence if we're not already silent
     if !commands.is_empty()
         && (commands.last().unwrap().frequency != 0.0 || commands.last().unwrap().amplitude != 0.0)
     {
@@ -222,6 +207,8 @@ fn convert_track_with_tempo(
 
 pub fn parse_midi_to_rumble(
     midi_data: &[u8],
+    primary_selection: Option<usize>,
+    secondary_selection: Option<usize>,
 ) -> Result<(RumbleTrack, Option<RumbleTrack>), ParseError> {
     let smf = Smf::parse(midi_data)?;
 
@@ -230,10 +217,7 @@ pub fn parse_midi_to_rumble(
         _ => 24.0,
     };
 
-    // First collect all tempo changes
     let tempo_changes = collect_tempo_changes(&smf);
-
-    // Analyze all tracks
     let mut track_metrics: Vec<TrackMetrics> = smf
         .tracks
         .iter()
@@ -245,40 +229,288 @@ pub fn parse_midi_to_rumble(
         })
         .collect();
 
-    // Sort tracks by their scores
-    track_metrics.sort_by(|a, b| {
-        b.calculate_score()
-            .partial_cmp(&a.calculate_score())
-            .unwrap()
-    });
+    println!("\n🎵 Found {} tracks in MIDI file", track_metrics.len());
 
-    // Filter out percussion and empty tracks
-    let top_tracks: Vec<_> = track_metrics
-        .iter()
-        .filter(|m| !m.is_percussion && m.note_count > 0)
-        .take(2)
-        .collect();
+    println!("\n📊 Track Analysis Results:");
+    println!("-------------------------");
+    for track in track_metrics.iter() {
+        let track_name = track.track_name.as_deref().unwrap_or("Unnamed Track");
+        let instrument = track
+            .track_instrument
+            .as_deref()
+            .unwrap_or("Unknown Instrument");
+        let score = track.calculate_score();
 
-    if top_tracks.is_empty() {
+        println!(
+            "Track {}: \"{}\" ({})",
+            track.track_index, track_name, instrument
+        );
+        println!("  - Type: {:?}", track.track_type);
+        println!("  - Score: {:.2}", score);
+        println!(
+            "  - Notes: {} ({} unique)",
+            track.note_count, track.unique_notes
+        );
+        println!("  - Is Percussion: {}", track.is_percussion);
+        println!("  - Note Density: {:.2} notes/sec", track.note_density);
+        println!("-------------------------");
+    }
+
+    let selected_tracks = if let Some(primary_idx) = primary_selection {
+        vec![&track_metrics[primary_idx]]
+    } else {
+        track_metrics.sort_by(|a, b| {
+            b.calculate_score()
+                .partial_cmp(&a.calculate_score())
+                .unwrap()
+        });
+        track_metrics
+            .iter()
+            .filter(|m| !m.is_percussion && m.note_count > 0)
+            .take(1)
+            .collect()
+    };
+
+    if selected_tracks.is_empty() {
         return Err(ParseError::NoTracks);
     }
 
-    // Convert the top track(s) to RumbleTracks with proper tempo handling
     let primary_track = convert_track_with_tempo(
-        &smf.tracks[top_tracks[0].track_index],
+        &smf.tracks[selected_tracks[0].track_index],
         &tempo_changes,
         ticks_per_beat,
     )?;
 
-    let secondary_track = if top_tracks.len() > 1 {
+    let secondary_track = if let Some(secondary_idx) = secondary_selection {
         Some(convert_track_with_tempo(
-            &smf.tracks[top_tracks[1].track_index],
+            &smf.tracks[secondary_idx],
             &tempo_changes,
             ticks_per_beat,
         )?)
+    } else if primary_selection.is_none() {
+        track_metrics
+            .iter()
+            .filter(|m| {
+                !m.is_percussion
+                    && m.note_count > 0
+                    && m.track_index != selected_tracks[0].track_index
+            })
+            .take(1)
+            .next()
+            .map(|track| {
+                convert_track_with_tempo(
+                    &smf.tracks[track.track_index],
+                    &tempo_changes,
+                    ticks_per_beat,
+                )
+            })
+            .transpose()?
     } else {
         None
     };
 
+    println!("\n🎯 Track Selection:");
+    println!(
+        "Primary Track: {} (Score: {:.2})",
+        selected_tracks[0]
+            .track_name
+            .as_deref()
+            .unwrap_or("Unnamed Track"),
+        selected_tracks[0].calculate_score()
+    );
+
+    if selected_tracks.len() > 1 {
+        println!(
+            "Secondary Track: {} (Score: {:.2})",
+            selected_tracks[1]
+                .track_name
+                .as_deref()
+                .unwrap_or("Unnamed Track"),
+            selected_tracks[1].calculate_score()
+        );
+
+        println!("\nTrack Relationship:");
+        println!(
+            "  Primary:   {} notes/sec, {} unique notes",
+            selected_tracks[0].note_density, selected_tracks[0].unique_notes
+        );
+        println!(
+            "  Secondary: {} notes/sec, {} unique notes",
+            selected_tracks[1].note_density, selected_tracks[1].unique_notes
+        );
+    }
     Ok((primary_track, secondary_track))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use midly::{Format, Header, MetaMessage, MidiMessage, Timing, TrackEvent, TrackEventKind};
+
+    // Helper function to create a basic MIDI file for testing
+    fn create_test_midi(tracks: Vec<Vec<TrackEvent<'static>>>) -> Vec<u8> {
+        let header = Header::new(Format::Sequential, Timing::Metrical(480.into()));
+        let smf = Smf { header, tracks };
+
+        // Write to a vector
+        let mut buffer = Vec::new();
+        smf.write(&mut buffer).expect("Failed to write MIDI data");
+        buffer
+    }
+
+    fn create_note_on(delta: u32, key: u8, velocity: u8) -> TrackEvent<'static> {
+        TrackEvent {
+            delta: delta.into(),
+            kind: TrackEventKind::Midi {
+                channel: 0.into(),
+                message: MidiMessage::NoteOn {
+                    key: key.into(),
+                    vel: velocity.into(),
+                },
+            },
+        }
+    }
+
+    fn create_note_off(delta: u32, key: u8) -> TrackEvent<'static> {
+        TrackEvent {
+            delta: delta.into(),
+            kind: TrackEventKind::Midi {
+                channel: 0.into(),
+                message: MidiMessage::NoteOff {
+                    key: key.into(),
+                    vel: 0.into(),
+                },
+            },
+        }
+    }
+
+    fn create_tempo_event(delta: u32, tempo: u32) -> TrackEvent<'static> {
+        TrackEvent {
+            delta: delta.into(),
+            kind: TrackEventKind::Meta(MetaMessage::Tempo(tempo.into())),
+        }
+    }
+
+    #[test]
+    fn test_simple_track_conversion() {
+        let track = vec![
+            create_note_on(0, 60, 100), // Middle C
+            create_note_off(480, 60),   // Half note duration
+            create_note_on(0, 64, 100), // E
+            create_note_off(480, 64),   // Half note duration
+        ];
+
+        let midi_data = create_test_midi(vec![track]);
+        let (primary_track, secondary_track) =
+            parse_midi_to_rumble(&midi_data, None, None).expect("Failed to parse MIDI");
+
+        assert!(secondary_track.is_none());
+        assert!(!primary_track.commands.is_empty());
+
+        // Verify the rumble commands
+        let commands = &primary_track.commands;
+        assert!(commands.len() >= 4); // At least note-on, note-off for each note
+
+        // Check first note
+        assert_eq!(commands[0].amplitude, 100.0 / 127.0);
+        assert!(commands[0].wait_before.is_zero());
+
+        // Verify silence at end
+        let last_command = commands.last().unwrap();
+        assert_eq!(last_command.amplitude, 0.0);
+        assert_eq!(last_command.frequency, 0.0);
+    }
+
+    #[test]
+    fn test_tempo_changes() {
+        let track = vec![
+            create_tempo_event(0, 500_000), // 120 BPM
+            create_note_on(0, 60, 100),
+            create_note_off(480, 60),
+            create_tempo_event(0, 250_000), // 240 BPM
+            create_note_on(0, 64, 100),
+            create_note_off(480, 64),
+        ];
+
+        let midi_data = create_test_midi(vec![track]);
+        let (primary_track, _) =
+            parse_midi_to_rumble(&midi_data, None, None).expect("Failed to parse MIDI");
+
+        // Second note should have different timing due to tempo change
+        let commands = &primary_track.commands;
+        assert!(!commands.is_empty());
+    }
+
+    #[test]
+    fn test_multiple_tracks() {
+        let track1 = vec![create_note_on(0, 60, 100), create_note_off(480, 60)];
+
+        let track2 = vec![create_note_on(0, 48, 100), create_note_off(480, 48)];
+
+        let midi_data = create_test_midi(vec![track1, track2]);
+        let (primary_track, secondary_track) =
+            parse_midi_to_rumble(&midi_data, None, None).expect("Failed to parse MIDI");
+
+        assert!(secondary_track.is_some());
+    }
+
+    #[test]
+    fn test_track_selection() {
+        let track1 = vec![create_note_on(0, 60, 100), create_note_off(480, 60)];
+
+        let track2 = vec![create_note_on(0, 48, 100), create_note_off(480, 48)];
+
+        let midi_data = create_test_midi(vec![track1, track2]);
+
+        // Test explicit primary track selection
+        let (primary_track, _) =
+            parse_midi_to_rumble(&midi_data, Some(1), None).expect("Failed to parse MIDI");
+
+        // The frequency of the first note should match track2
+        assert!(primary_track.commands[0].frequency < 500.0); // Lower note
+    }
+
+    #[test]
+    fn test_note_to_frequency() {
+        // Test with standard MIDI note numbers and frequencies
+        assert!(
+            (note_to_frequency(60) - 261.63).abs() < 1.0,
+            "Middle C (MIDI 60) should be ~261.63 Hz, got {}",
+            note_to_frequency(60)
+        );
+
+        assert!(
+            (note_to_frequency(69) - 440.0).abs() < 1.0,
+            "A4 (MIDI 69) should be 440 Hz, got {}",
+            note_to_frequency(69)
+        );
+
+        assert!(
+            (note_to_frequency(81) - 880.0).abs() < 1.0,
+            "A5 (MIDI 81) should be 880 Hz, got {}",
+            note_to_frequency(81)
+        );
+
+        // Test octave relationships
+        let a4 = note_to_frequency(69);
+        let a5 = note_to_frequency(81);
+        assert!(
+            (a5 / a4 - 2.0).abs() < 0.01,
+            "One octave difference should double frequency"
+        );
+    }
+
+    #[test]
+    fn test_empty_midi() {
+        let midi_data = create_test_midi(vec![vec![]]);
+        let result = parse_midi_to_rumble(&midi_data, None, None);
+        assert!(matches!(result, Err(ParseError::NoTracks)));
+    }
+
+    #[test]
+    fn test_invalid_midi_data() {
+        let invalid_data = vec![0, 1, 2, 3]; // Invalid MIDI data
+        let result = parse_midi_to_rumble(&invalid_data, None, None);
+        assert!(matches!(result, Err(ParseError::MidiError(_))));
+    }
 }

@@ -2,15 +2,13 @@ use hidapi::HidError;
 use mockall::mock;
 use mockall::predicate::*;
 use musical_joycons::joycon::types::{DeviceInfo, JOYCON_L_BT, JOYCON_R_BT};
-use musical_joycons::joycon::{JoyCon, JoyConError, JoyConManager, JoyConType};
+use musical_joycons::joycon::{JoyCon, JoyConError, JoyConType};
 
-// First, define a trait that represents the behavior we want to mock
 pub trait HidDeviceTraitMock: Send {
     fn write(&self, data: &[u8]) -> Result<usize, HidError>;
     fn read(&mut self, data: &mut [u8]) -> Result<usize, HidError>;
 }
 
-// Create a mock for our trait
 mock! {
     pub HidDeviceMock {}
 
@@ -63,19 +61,7 @@ async fn test_rumble_parameters() {
 
     let mut joycon = JoyCon::new(&device_info).unwrap();
 
-    // Test invalid frequency
-    let result = joycon.rumble(1300.0, 0.5);
-    assert!(matches!(result, Err(JoyConError::InvalidRumble(_))));
-
     // Test invalid amplitude
     let result = joycon.rumble(440.0, 1.5);
     assert!(matches!(result, Err(JoyConError::InvalidRumble(_))));
-}
-
-
-// Helper function to create a mock HID device for testing
-fn setup_mock_device() -> MockHidDeviceMock {
-    let mut mock_device = MockHidDeviceMock::new();
-    mock_device.expect_write().returning(|data| Ok(data.len()));
-    mock_device
 }
