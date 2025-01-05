@@ -1,7 +1,9 @@
-// src/joycon/joycon.rs
 use super::interface::JoyconInterface;
 use super::types::{Command, DeviceInfo, JoyConError, JoyConType, Subcommand};
+use crate::midi::rubmle::RumbleTrack;
 use hidapi::HidDevice;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 pub struct JoyCon {
@@ -31,18 +33,30 @@ impl JoyCon {
         })
     }
 
-    // Public interface
     pub fn rumble(&mut self, frequency: f32, amplitude: f32) -> Result<(), JoyConError> {
-        if !(0.0..=1252.0).contains(&frequency) {
-            return Err(JoyConError::InvalidRumble(
-                "Frequency out of range (0-1252 Hz)",
-            ));
-        }
         if !(0.0..=1.0).contains(&amplitude) {
             return Err(JoyConError::InvalidRumble("Amplitude out of range (0-1.0)"));
         }
 
-        JoyconInterface::send_rumble(self, frequency, amplitude)
+        if frequency == 0.0 {
+            return JoyconInterface::send_rumble(self, 0.0, amplitude);
+        }
+
+        let wrapped_freq = {
+            let mut freq = frequency;
+            // Shift down octaves until below max
+            while freq > 1252.0 {
+                freq /= 2.0;
+            }
+            // Shift up octaves until above min (excluding 0)
+            while freq > 0.0 && freq < 1.0 {
+                freq *= 2.0;
+            }
+
+            freq
+        };
+
+        JoyconInterface::send_rumble(self, wrapped_freq, amplitude)
     }
 
     pub fn enable_rumble(&mut self) -> Result<(), JoyConError> {
@@ -54,8 +68,6 @@ impl JoyCon {
         )
     }
     pub fn play_scale(&mut self) -> Result<(), JoyConError> {
-        // Define a major scale frequencies (approximate musical notes)
-        // Starting from middle C (262 Hz) going up to the next C
         let scale = [
             524.0,  // C5
             588.0,  // D5
@@ -67,23 +79,44 @@ impl JoyCon {
             1046.0, // C6
         ];
 
-        // Duration for each note
-        let note_duration = Duration::from_millis(500);
-        // Short pause between notes
-        let pause_duration = Duration::from_millis(500);
+        let note_duration = Duration::from_millis(50);
+        let pause_duration = Duration::from_millis(5);
 
         for &frequency in scale.iter() {
-            // Play the note
             self.rumble(frequency, 0.90)?;
             std::thread::sleep(note_duration);
 
-            // Brief pause between notes
             self.rumble(0.0, 0.0)?;
             std::thread::sleep(pause_duration);
         }
 
-        // Ensure rumble is off at the end
         self.rumble(0.0, 0.0)
+    }
+
+    pub fn play_rumble_track(&mut self, track: RumbleTrack) -> Result<(), JoyConError> {
+        println!("Track duration: {:?}", track.total_duration);
+
+        for command in track.commands {
+            if !command.wait_before.is_zero() {
+                thread::sleep(command.wait_before);
+            }
+            self.rumble(command.frequency, command.amplitude)?;
+        }
+
+        self.rumble(0.0, 0.0)?;
+        Ok(())
+    }
+
+    pub fn play_synchronized(
+        &mut self,
+        track: RumbleTrack,
+        start_signal: Arc<Mutex<bool>>,
+    ) -> Result<(), JoyConError> {
+        while !*start_signal.lock().unwrap() {
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        self.play_rumble_track(track)
     }
 
     pub fn initialize_device(&mut self) -> Result<(), JoyConError> {
