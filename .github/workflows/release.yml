@@ -5,25 +5,32 @@ on:
     tags:
       - "v*.*.*"
 
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_NAME: musical-joycons
 
 jobs:
   build:
-    name: Build ${{ matrix.os }}
+    name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact_name: musical-joycons
-            asset_name: musical-joycons-linux-amd64
+            target: linux
+            artifact_name: musicalJoycons
+            asset_name: MusicalJoycons-linux-x86_64
           - os: windows-latest
-            artifact_name: musical-joycons.exe
-            asset_name: musical-joycons-windows-amd64.exe
+            target: windows
+            artifact_name: musicalJoycons.exe
+            asset_name: MusicalJoycons-windows-x86_64
           - os: macos-latest
-            artifact_name: musical-joycons
-            asset_name: musical-joycons-macos-amd64
+            target: macos
+            artifact_name: musicalJoycons
+            asset_name: MusicalJoycons-macos-x86_64
 
     steps:
     - uses: actions/checkout@v4
@@ -48,37 +55,54 @@ jobs:
     - name: Run tests
       run: cargo test --release
       
-    - name: Prepare binary
+    - name: Prepare release archive
       shell: bash
       run: |
-        mkdir -p release
+        mkdir -p "release/${{ env.RELEASE_NAME }}"
+        
+        # Copy executable
         if [ "${{ matrix.os }}" = "windows-latest" ]; then
-          cp target/release/musicalJoycons.exe release/${{ matrix.asset_name }}
+          cp "target/release/${{ matrix.artifact_name }}" "release/${{ env.RELEASE_NAME }}/"
+          cd release
+          7z a "${{ matrix.asset_name }}.zip" "${{ env.RELEASE_NAME }}"
         else
-          cp target/release/musicalJoycons release/${{ matrix.asset_name }}
+          cp "target/release/${{ matrix.artifact_name }}" "release/${{ env.RELEASE_NAME }}/"
+          chmod +x "release/${{ env.RELEASE_NAME }}/${{ matrix.artifact_name }}"
+          cd release
+          tar -czf "${{ matrix.asset_name }}.tar.gz" "${{ env.RELEASE_NAME }}"
         fi
         
-    - name: Upload binary
+    - name: Upload release archive
       uses: actions/upload-artifact@v3
       with:
         name: ${{ matrix.asset_name }}
-        path: release/${{ matrix.asset_name }}
+        path: release/${{ matrix.asset_name }}.${{ matrix.os == 'windows-latest' && 'zip' || 'tar.gz' }}
         
   create_release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@v4
+      
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+        
       - name: Download artifacts
         uses: actions/download-artifact@v3
-        
+        with:
+          path: release
+
       - name: Create Release
-        id: create_release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            musical-joycons-linux-amd64
-            musical-joycons-windows-amd64.exe
-            musical-joycons-macos-amd64
+            release/MusicalJoycons-linux-x86_64/MusicalJoycons-linux-x86_64.tar.gz
+            release/MusicalJoycons-windows-x86_64/MusicalJoycons-windows-x86_64.zip
+            release/MusicalJoycons-macos-x86_64/MusicalJoycons-macos-x86_64.tar.gz
+          name: "Musical Joycons ${{ env.VERSION }}"
           draft: false
           prerelease: false
           generate_release_notes: true
