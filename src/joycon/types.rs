@@ -2,7 +2,7 @@ pub(crate) const VENDOR_ID: u16 = 0x057e;
 pub const JOYCON_L_BT: u16 = 0x2006;
 pub const JOYCON_R_BT: u16 = 0x2007;
 pub(crate) const PRO_CONTROLLER: u16 = 0x2009;
-pub(crate) const JOYCON_CHARGING_GRIP: u16 = 0x200e;
+pub const JOYCON_CHARGING_GRIP: u16 = 0x200e;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Command {
@@ -23,6 +23,7 @@ pub enum JoyConType {
     Left,
     Right,
     ProController,
+    Other(u16), 
 }
 
 pub struct DeviceInfo {

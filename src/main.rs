@@ -1,4 +1,4 @@
-use musical_joycons::joycon::{JoyCon, JoyConError, JoyConManager, JoyConType};
+use musical_joycons::joycon::{JoyCon, JoyConError, JoyConManager};
 use musical_joycons::midi::rubmle::parse_midi_to_rumble;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -13,12 +13,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🎮 Musical JoyCons - MIDI Player");
     println!("===============================");
 
-    print!("Enter the path to your MIDI file: ");
-    io::stdout().flush()?;
+    println!("Drag and drop your MIDI file into this terminal and press Enter:");
 
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
-    let path = PathBuf::from(input.trim());
+    let path = PathBuf::from(input.trim().trim_matches('"'));
 
     if !path.exists() {
         println!("❌ File not found: {:?}", path);
@@ -54,24 +53,13 @@ fn get_user_track_selection(track_count: usize, prompt: &str) -> Option<usize> {
 
 fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     // Connect to JoyCons
-    let mut joycons = connect_to_joycons()?;
-    let mut right_joycon = None;
-    let mut left_joycon = None;
-
-    // Sort JoyCons by type
-    for joycon in joycons.drain(..) {
-        match joycon.get_type() {
-            JoyConType::Right => right_joycon = Some(joycon),
-            JoyConType::Left => left_joycon = Some(joycon),
-            _ => println!("⚠️ Unsupported controller type detected"),
-        }
-    }
+    let joycons = connect_to_joycons()?;
 
     println!("🎵 Loading MIDI file: {:?}", path);
     let midi_data = std::fs::read(&path)?;
 
     // First parse to show track information and get track count
-    let (primary_track, _) = parse_midi_to_rumble(&midi_data, None, None)?;
+    let tracks = parse_midi_to_rumble(&midi_data, vec![None; joycons.len()])?;
 
     // Get track count from output
     println!("\nWould you like to select specific tracks? y/n (Press Enter to skip)");
@@ -81,59 +69,34 @@ fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
 
-    let (primary_selection, secondary_selection) = if input.trim().is_empty() {
-        (None, None)
+    let track_selections: Vec<Option<usize>> = if input.trim().is_empty() {
+        vec![None; joycons.len()]
     } else {
-        let primary = get_user_track_selection(
-            primary_track.commands.len(),
-            "Select primary track for Right JoyCon:",
-        );
-        let secondary = if primary.is_some() {
-            get_user_track_selection(
-                primary_track.commands.len(),
-                "Select secondary track for Left JoyCon (optional):",
-            )
-        } else {
-            None
-        };
-        (primary, secondary)
+        (0..joycons.len())
+            .map(|i| {
+                get_user_track_selection(
+                    tracks.len(),
+                    &format!("Select track for JoyCon {}:", i + 1),
+                )
+            })
+            .collect()
     };
 
     // Parse again with user selections
-    let (primary_track, secondary_track) =
-        parse_midi_to_rumble(&midi_data, primary_selection, secondary_selection)?;
-
-    println!(
-        "✨ Primary track duration: {:?}",
-        primary_track.total_duration
-    );
-    if let Some(ref secondary) = secondary_track {
-        println!(
-            "✨ Secondary track duration: {:?}",
-            secondary.total_duration
-        );
-    }
+    let tracks = parse_midi_to_rumble(&midi_data, track_selections)?;
 
     // Create synchronization signal
     let start_signal = Arc::new(Mutex::new(false));
     let mut handles = Vec::new();
 
     // Assign tracks to JoyCons
-    if let Some(mut right) = right_joycon {
-        println!("🎮 Right JoyCon will play primary track");
-        let right_track = primary_track.clone();
-        let right_signal = Arc::clone(&start_signal);
-        handles.push(thread::spawn(move || {
-            right.play_synchronized(right_track, right_signal)
-        }));
-    }
-
-    if let Some(mut left) = left_joycon {
-        if let Some(left_track) = secondary_track {
-            println!("🎮 Left JoyCon will play secondary track");
-            let left_signal = Arc::clone(&start_signal);
+    for (i, mut joycon) in joycons.into_iter().enumerate() {
+        if let Some(track) = tracks.get(i) {
+            println!("🎮 JoyCon {} will play track {}", i + 1, i + 1);
+            let joycon_track = track.clone();
+            let joycon_signal = Arc::clone(&start_signal);
             handles.push(thread::spawn(move || {
-                left.play_synchronized(left_track, left_signal)
+                joycon.play_synchronized(joycon_track, joycon_signal)
             }));
         }
     }
@@ -181,7 +144,7 @@ fn connect_to_joycons() -> Result<Vec<JoyCon>, JoyConError> {
 
 fn print_retry_message(tries: u32) {
     println!("❌ No JoyCons found. Are they connected to your PC?");
-    println!("   - Check you bluetooth devices connected");
+    println!("   - Check your Bluetooth devices connected");
     println!("   - Make sure the JoyCon is charged");
     println!(
         "Retrying in {} seconds... (Attempt {}/{})",

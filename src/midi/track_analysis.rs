@@ -123,7 +123,7 @@ pub fn analyze_track(track: &Track, ticks_per_beat: f32, default_tempo: u32) -> 
     };
 
     if note_timings.len() > 1 {
-        let mut intervals: Vec<f32> = note_timings.windows(2).map(|w| w[1] - w[0]).collect();
+        let intervals: Vec<f32> = note_timings.windows(2).map(|w| w[1] - w[0]).collect();
 
         let mean_interval = intervals.iter().sum::<f32>() / intervals.len() as f32;
         let variance = intervals
