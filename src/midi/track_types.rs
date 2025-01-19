@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Debug, Clone)]  // Add Clone here
 pub struct TrackMetrics {
     pub track_index: usize,
     pub note_count: usize,
@@ -18,7 +18,7 @@ pub struct TrackMetrics {
     pub rhythmic_regularity: f32,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]  // Add Clone here
 pub enum TrackType {
     Melody,
     Harmony,
@@ -133,7 +133,7 @@ impl TrackMetrics {
             TrackType::Melody => 1.3,
             TrackType::Bass => 1.1,
             TrackType::Vocals => 1.1,
-            TrackType::Drums => 0.0,
+            TrackType::Drums => 0.2,
             TrackType::Unknown => 1.0,
         };
 
@@ -147,6 +147,42 @@ impl TrackMetrics {
         };
 
         base_score * type_multiplier * bonus_multiplier
+    }
+
+    // Add new method to calculate score for a specific time window
+    pub fn calculate_window_score(&self, window_note_count: usize, window_duration: f32) -> f32 {
+        if self.is_percussion {
+            return 0.0;
+        }
+
+        // Make note count the primary factor
+        let note_score = window_note_count as f32 * 0.8; // 80% of score comes from note count
+
+        // Calculate density as a bonus multiplier
+        let window_density = if window_duration > 0.0 {
+            window_note_count as f32 / window_duration
+        } else {
+            0.0
+        };
+
+        // Small bonus for good density (avoid extremely sparse or dense sections)
+        let density_multiplier = {
+            let ideal_density = 3.0;
+            let density_diff = (window_density - ideal_density).abs();
+            1.0 + (0.2 * (1.0 - (density_diff / 5.0)).max(0.0)) // Up to 20% bonus
+        };
+
+        // Apply track type as a smaller multiplier
+        let type_multiplier = match self.track_type {
+            TrackType::Melody => 1.15,  // Reduced from 1.3
+            TrackType::Bass => 1.1,     // Same
+            TrackType::Harmony => 1.05,  // Reduced from 1.5
+            TrackType::Vocals => 1.1,    // Same
+            TrackType::Drums => 0.0,
+            TrackType::Unknown => 1.0,
+        };
+
+        note_score * density_multiplier * type_multiplier
     }
 
     pub fn determine_track_type(&mut self, program_number: Option<u8>) {
