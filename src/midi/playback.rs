@@ -9,14 +9,16 @@ use crate::midi::rubmle::{parse_midi_to_rumble, RumbleCommand, TrackMergeControl
 const RANKING_WINDOW: Duration = Duration::from_millis(500);
 
 fn find_commands_at_time(commands: &[RumbleCommand], target_time: Duration) -> usize {
-    let mut current_time = Duration::ZERO;
+    let mut accumulated_time = Duration::ZERO;
+    
     for (idx, cmd) in commands.iter().enumerate() {
-        if current_time >= target_time {
+        if accumulated_time + cmd.wait_before > target_time {
             return idx;
         }
-        current_time += cmd.wait_before;
+        accumulated_time += cmd.wait_before;
     }
-    0
+    
+    commands.len()
 }
 
 fn is_note_off(cmd: &RumbleCommand, prev_cmd: Option<&RumbleCommand>) -> bool {
@@ -290,4 +292,67 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
 
     println!("✨ Playback complete!");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_commands_at_time() {
+        let commands = vec![
+            RumbleCommand {
+                frequency: 100.0,
+                amplitude: 1.0,
+                wait_before: Duration::from_millis(100),
+            },
+            RumbleCommand {
+                frequency: 200.0,
+                amplitude: 0.5,
+                wait_before: Duration::from_millis(200),
+            },
+            RumbleCommand {
+                frequency: 300.0,
+                amplitude: 0.7,
+                wait_before: Duration::from_millis(300),
+            },
+        ];
+
+        assert_eq!(find_commands_at_time(&commands, Duration::ZERO), 0);
+        assert_eq!(find_commands_at_time(&commands, Duration::from_millis(50)), 0);
+        assert_eq!(find_commands_at_time(&commands, Duration::from_millis(100)), 1);
+        assert_eq!(find_commands_at_time(&commands, Duration::from_millis(300)), 2);
+        assert_eq!(find_commands_at_time(&commands, Duration::from_millis(600)), 3);
+    }
+
+    #[test]
+    fn test_is_note_off() {
+        let note_on = RumbleCommand {
+            frequency: 100.0,
+            amplitude: 1.0,
+            wait_before: Duration::from_millis(100),
+        };
+
+        let note_off = RumbleCommand {
+            frequency: 100.0,
+            amplitude: 0.0,
+            wait_before: Duration::from_millis(100),
+        };
+
+        // Test with no previous command
+        assert!(!is_note_off(&note_on, None));
+        assert!(!is_note_off(&note_off, None));
+
+        // Test note off after note on
+        assert!(is_note_off(&note_off, Some(&note_on)));
+
+        // Test note on after note off
+        assert!(!is_note_off(&note_on, Some(&note_off)));
+
+        // Test note on after note on
+        assert!(!is_note_off(&note_on, Some(&note_on)));
+
+        // Test note off after note off
+        assert!(!is_note_off(&note_off, Some(&note_off)));
+    }
 }

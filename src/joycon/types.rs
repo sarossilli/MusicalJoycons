@@ -30,6 +30,9 @@ pub struct DeviceInfo {
     pub product_id: u16,
     pub interface_number: i32,
     pub serial: String,
+    pub(crate) path: String,
+    pub(crate) vendor_id: i32,
+    pub(crate) usage_page: i32,
 }
 
 #[derive(Debug, thiserror::Error)]

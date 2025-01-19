@@ -39,6 +39,9 @@ impl JoyConManager {
                                     .serial_number()
                                     .unwrap_or("Unknown")
                                     .to_string(),
+                                path: device_info.path().to_string_lossy().into_owned(),
+                                vendor_id: device_info.vendor_id() as i32,
+                                usage_page: device_info.usage_page() as i32,
                             };
 
                             if let Ok(mut joycon) = JoyCon::new(&device_info) {
