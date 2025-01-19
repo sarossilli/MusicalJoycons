@@ -95,6 +95,9 @@ jobs:
         with:
           path: release
 
+      - name: List downloaded files
+        run: ls -R release
+
       - name: Create Release
         uses: softprops/action-gh-release@v2.2.0
         with:
