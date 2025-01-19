@@ -45,7 +45,6 @@ jobs:
           pkg-config \
           libdbus-1-dev \
           libbluetooth-dev
-
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
       
@@ -91,33 +90,17 @@ jobs:
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
         
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v3
         with:
-          name: MusicalJoycons-linux-x86_64
           path: release
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: MusicalJoycons-windows-x86_64
-          path: release
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: MusicalJoycons-macos-x86_64
-          path: release
-
-      - name: List downloaded files
-        run: ls -R release
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2.2.0
+        uses: softprops/action-gh-release@v1
         with:
           files: |
-            release/MusicalJoycons-linux-x86_64.tar.gz
-            release/MusicalJoycons-windows-x86_64.zip
-            release/MusicalJoycons-macos-x86_64.tar.gz
+            release/MusicalJoycons-linux-x86_64/MusicalJoycons-linux-x86_64.tar.gz
+            release/MusicalJoycons-windows-x86_64/MusicalJoycons-windows-x86_64.zip
+            release/MusicalJoycons-macos-x86_64/MusicalJoycons-macos-x86_64.tar.gz
           name: "Musical Joycons ${{ env.VERSION }}"
           draft: false
           prerelease: false
