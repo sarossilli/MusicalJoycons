@@ -11,6 +11,9 @@ mod tests {
             product_id: JOYCON_L_BT,
             interface_number: 0,
             serial: String::from("TEST"),
+            path: String::new(),
+            vendor_id: 0x057E,
+            usage_page: 0,
         };
 
         let mut joycon = JoyCon::new(&device_info).unwrap();

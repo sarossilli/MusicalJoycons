@@ -1,3 +1,4 @@
 pub mod rubmle;
 pub mod track_analysis;
-mod track_types;
+pub mod track_types;
+pub mod playback;

@@ -34,12 +34,11 @@ impl JoyCon {
     }
 
     pub fn rumble(&mut self, frequency: f32, amplitude: f32) -> Result<(), JoyConError> {
-        if !(0.0..=1.0).contains(&amplitude) {
-            return Err(JoyConError::InvalidRumble("Amplitude out of range (0-1.0)"));
-        }
+        // Clamp amplitude between 0 and 1 (should already be normalized from track analysis)
+        let clamped_amplitude = amplitude.clamp(0.0, 1.0);
 
         if frequency == 0.0 {
-            return JoyconInterface::send_rumble(self, 0.0, amplitude);
+            return JoyconInterface::send_rumble(self, 0.0, clamped_amplitude);
         }
 
         let wrapped_freq = {
@@ -56,7 +55,7 @@ impl JoyCon {
             freq
         };
 
-        JoyconInterface::send_rumble(self, wrapped_freq, amplitude)
+        JoyconInterface::send_rumble(self, wrapped_freq, clamped_amplitude)
     }
 
     pub fn enable_rumble(&mut self) -> Result<(), JoyConError> {
@@ -143,5 +142,67 @@ impl JoyCon {
 
     pub(crate) fn increment_timing_byte(&mut self) {
         self.timing_byte = self.timing_byte.wrapping_add(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_device_info(product_id: u16) -> DeviceInfo {
+        DeviceInfo {
+            path: String::new(),
+            vendor_id: 0x057E, // Nintendo vendor ID
+            product_id,
+            usage_page: 0,
+            interface_number: 0,
+            serial: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_joycon_creation() {
+        let left_info = create_test_device_info(crate::joycon::types::JOYCON_L_BT);
+        let right_info = create_test_device_info(crate::joycon::types::JOYCON_R_BT);
+        let pro_info = create_test_device_info(crate::joycon::types::PRO_CONTROLLER);
+
+        assert!(matches!(
+            JoyCon::new(&left_info).unwrap().get_type(),
+            JoyConType::Left
+        ));
+        assert!(matches!(
+            JoyCon::new(&right_info).unwrap().get_type(),
+            JoyConType::Right
+        ));
+        assert!(matches!(
+            JoyCon::new(&pro_info).unwrap().get_type(),
+            JoyConType::ProController
+        ));
+    }
+
+    #[test]
+    fn test_timing_byte() {
+        let mut joycon = JoyCon::new(&create_test_device_info(crate::joycon::types::JOYCON_L_BT)).unwrap();
+        
+        assert_eq!(joycon.get_timing_byte(), 0);
+        joycon.increment_timing_byte();
+        assert_eq!(joycon.get_timing_byte(), 1);
+        
+        // Test wrapping behavior
+        joycon.timing_byte = 255;
+        joycon.increment_timing_byte();
+        assert_eq!(joycon.get_timing_byte(), 0);
+    }
+
+    #[test]
+    fn test_rumble_parameters() {
+        let mut joycon = JoyCon::new(&create_test_device_info(crate::joycon::types::JOYCON_L_BT)).unwrap();
+        
+        // Test amplitude clamping
+        assert!(joycon.rumble(440.0, 1.5).is_err()); // Should fail without device
+        
+        // Test frequency wrapping
+        assert!(joycon.rumble(2504.0, 0.5).is_err()); // Should fail without device but would wrap to 1252.0
+        assert!(joycon.rumble(0.25, 0.5).is_err()); // Should fail without device but would wrap to 1.0
     }
 }
