@@ -96,12 +96,12 @@ jobs:
           path: release
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2.2.0
         with:
           files: |
-            release/MusicalJoycons-linux-x86_64/MusicalJoycons-linux-x86_64.tar.gz
-            release/MusicalJoycons-windows-x86_64/MusicalJoycons-windows-x86_64.zip
-            release/MusicalJoycons-macos-x86_64/MusicalJoycons-macos-x86_64.tar.gz
+            release/MusicalJoycons-linux-x86_64.tar.gz
+            release/MusicalJoycons-windows-x86_64.zip
+            release/MusicalJoycons-macos-x86_64.tar.gz
           name: "Musical Joycons ${{ env.VERSION }}"
           draft: false
           prerelease: false
