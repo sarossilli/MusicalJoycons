@@ -44,7 +44,6 @@ struct TempoChange {
 const BASE_FREQUENCY: f32 = 880.0; // A5 note frequency (up one octave from A4)
 const MIDI_A4_NOTE: i32 = 69; // MIDI note number for A4
 const DEFAULT_TEMPO: u32 = 500_000; // Default tempo (120 BPM)
-const BASE_AMPLITUDE: f32 = 1.0; // Base amplitude for notes
 const SILENCE_THRESHOLD: Duration = Duration::from_millis(300); // Reduced from 500ms
 
 fn note_to_frequency(note: i32) -> f32 {
@@ -158,7 +157,7 @@ fn convert_track_with_tempo(
     
     for event in track.iter() {
         let delta_ticks = event.delta.as_int() as u32;
-        if (delta_ticks > 0) {
+        if delta_ticks > 0 {
             let wait_duration = ticks_to_duration(
                 current_time_ticks,
                 current_time_ticks + delta_ticks,
@@ -191,12 +190,13 @@ fn convert_track_with_tempo(
             TrackEventKind::Midi { message, .. } => match message {
                 midly::MidiMessage::NoteOn { key, vel } if vel.as_int() > 0 => {
                     let frequency = note_to_frequency(i32::from(key.as_int()));
-                    let amplitude = (f32::from(vel.as_int()) / 127.0) * BASE_AMPLITUDE;
+                    // Scale amplitude to full range (0.0-1.0)
+                    let amplitude = f32::from(vel.as_int()) / 127.0;
                     
                     println!("  Note On: key={}, freq={:.1}, amp={:.2}", key.as_int(), frequency, amplitude);
                     active_notes.push((key.as_int(), amplitude));
 
-                    if (!last_event_had_wait || !commands.is_empty()) {
+                    if !last_event_had_wait || !commands.is_empty() {
                         commands.push(RumbleCommand {
                             frequency,
                             amplitude,
@@ -282,21 +282,6 @@ fn find_commands_at_time(commands: &[RumbleCommand], time: Duration) -> usize {
         }
     }
     commands.len()
-}
-
-fn is_track_active_at_time(track: &[RumbleCommand], start_time: Duration) -> bool {
-    let mut current_time = Duration::ZERO;
-    let look_ahead = Duration::from_millis(500); // Look ahead 500ms for activity
-
-    for cmd in track {
-        current_time += cmd.wait_before;
-        if current_time >= start_time && current_time <= start_time + look_ahead {
-            if cmd.amplitude > 0.0 {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 #[derive(Debug)]
@@ -463,6 +448,25 @@ pub fn parse_midi_to_rumble(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    // First, find the global maximum velocity
+    let mut max_velocity = 1.0f32;
+    for track in smf.tracks.iter() {
+        for event in track.iter() {
+            if let TrackEventKind::Midi { message, .. } = event.kind {
+                if let midly::MidiMessage::NoteOn { vel, .. } = message {
+                    max_velocity = max_velocity.max(vel.as_int() as f32 / 127.0);
+                }
+            }
+        }
+    }
+
+    // Normalize all amplitudes in the tracks
+    for track in &mut rumble_tracks {
+        for cmd in &mut track.commands {
+            cmd.amplitude = cmd.amplitude / max_velocity;
+        }
+    }
+
     // Update switch points with multiple alternative tracks
     for i in 0..rumble_tracks.len() {
         let current_track_idx = rumble_tracks[i].track_index;
@@ -505,7 +509,7 @@ pub fn parse_midi_to_rumble(
                 .filter(|(idx, _score, activity)| {
                     // Find tracks that will be active at or soon after the switch point
                     let mut is_active = false;
-                    let mut current_time = Duration::ZERO;
+                    let current_time = Duration::ZERO;
                     let look_ahead = Duration::from_millis(500);
 
                     for (time, active) in activity.iter() {

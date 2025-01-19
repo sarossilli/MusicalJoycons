@@ -34,12 +34,11 @@ impl JoyCon {
     }
 
     pub fn rumble(&mut self, frequency: f32, amplitude: f32) -> Result<(), JoyConError> {
-        if !(0.0..=1.0).contains(&amplitude) {
-            return Err(JoyConError::InvalidRumble("Amplitude out of range (0-1.0)"));
-        }
+        // Clamp amplitude between 0 and 1 (should already be normalized from track analysis)
+        let clamped_amplitude = amplitude.clamp(0.0, 1.0);
 
         if frequency == 0.0 {
-            return JoyconInterface::send_rumble(self, 0.0, amplitude);
+            return JoyconInterface::send_rumble(self, 0.0, clamped_amplitude);
         }
 
         let wrapped_freq = {
@@ -56,7 +55,7 @@ impl JoyCon {
             freq
         };
 
-        JoyconInterface::send_rumble(self, wrapped_freq, amplitude)
+        JoyconInterface::send_rumble(self, wrapped_freq, clamped_amplitude)
     }
 
     pub fn enable_rumble(&mut self) -> Result<(), JoyConError> {

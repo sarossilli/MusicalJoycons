@@ -9,23 +9,25 @@ pub fn analyze_track(track: &Track, ticks_per_beat: f32, default_tempo: u32) -> 
     let mut note_pitches = Vec::new();
     let mut note_timings = Vec::new();
     let mut velocities = Vec::new();
-    let mut total_velocity = 0;
     let mut note_durations = Vec::new();
     let mut total_note_duration = 0.0;
     let mut program_number = None;
 
     let mut current_time = 0.0;
-    let mut current_tempo = default_tempo as f32;
+    let current_tempo = default_tempo as f32;
     let microseconds_per_tick = current_tempo / ticks_per_beat;
+    let mut max_velocity: u32 = 1;
 
     for event in track.iter() {
         current_time += event.delta.as_int() as f32 * microseconds_per_tick / 1_000_000.0;
 
         match event.kind {
             TrackEventKind::Meta(meta) => match meta {
+                /*
                 midly::MetaMessage::Tempo(tempo) => {
                     current_tempo = tempo.as_int() as f32;
                 }
+                 */
                 midly::MetaMessage::TrackName(name) => {
                     metrics.track_name = Some(String::from_utf8_lossy(name).into_owned());
                 }
@@ -50,7 +52,7 @@ pub fn analyze_track(track: &Track, ticks_per_beat: f32, default_tempo: u32) -> 
                         note_timings.push(current_time);
 
                         let velocity = vel.as_int();
-                        total_velocity += velocity as u32;
+                        max_velocity = max_velocity.max(velocity as u32); // Track maximum velocity
                         velocities.push(velocity as f32);
 
                         active_notes.insert(pitch, current_time);
@@ -72,16 +74,15 @@ pub fn analyze_track(track: &Track, ticks_per_beat: f32, default_tempo: u32) -> 
         }
     }
 
-    // Calculate basic metrics
-    metrics.total_duration = current_time;
-    metrics.note_density = if current_time > 0.0 {
-        metrics.note_count as f32 / current_time
-    } else {
-        0.0
-    };
+    // Normalize velocities using max_velocity
+    velocities = velocities.into_iter().map(|v| v / max_velocity as f32).collect();
 
+    // Scale velocities to full MIDI range (0-127)
+    velocities = velocities.into_iter().map(|v| v / 127.0).collect();
+
+    // Recalculate metrics with properly scaled velocities
     metrics.avg_velocity = if metrics.note_count > 0 {
-        total_velocity as f32 / metrics.note_count as f32
+        velocities.iter().sum::<f32>() / metrics.note_count as f32
     } else {
         0.0
     };
@@ -92,6 +93,14 @@ pub fn analyze_track(track: &Track, ticks_per_beat: f32, default_tempo: u32) -> 
             / (velocities.len() - 1) as f32)
             .sqrt();
     }
+
+    // Calculate basic metrics
+    metrics.total_duration = current_time;
+    metrics.note_density = if current_time > 0.0 {
+        metrics.note_count as f32 / current_time
+    } else {
+        0.0
+    };
 
     metrics.avg_note_duration = if !note_durations.is_empty() {
         note_durations.iter().sum::<f32>() / note_durations.len() as f32
