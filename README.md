@@ -12,8 +12,6 @@ I mainly want to do this to learn rust - but also I think the C++ version was po
 This is an active rewrite of the [original C++ implementation](https://github.com/sarossilli/Musical-Joycons). While we're making steady progress, expect significant architectural changes and evolving APIs.
 
 ## Core Features (In Development)
-* **Haptic MIDI Playback**: Transform MIDI files into precise HD rumble patterns
-* **Bluetooth Integration**: Native JoyCon connectivity using modern Rust async patterns
 * **Multi-track Support**: Independent control over dual JoyCon haptics
 * **Zero-overhead Abstractions**: Leveraging Rust's type system for performant, safe hardware interaction
 
@@ -22,7 +20,7 @@ This is an active rewrite of the [original C++ implementation](https://github.co
 musical-joycons/
 ├── src/
 │   ├── joycon/     # Bluetooth and haptic control
-│   ├── audio/      # MIDI/Audio processing pipeline
+│   ├── midi/      # MIDI/Audio processing pipeline
 │   └── config/     # Runtime configuration
 ```
 
@@ -43,10 +41,11 @@ cargo test
 * Additional dependencies to be determined during development
 
 ## Roadmap
-1. [ ] Core JoyCon communication layer
-2. [ ] MIDI parsing and transformation
-3. [ ] Haptic pattern generation
-4. [ ] Configuration and UI layer
+1. [*] Core JoyCon communication layer
+2. [*] MIDI parsing and transformation
+3. [*] Haptic pattern generation
+4. [ ] Track Layering
+5. [ ] Configuration and UI layer
 
 ## Contributing
 While the project is in active development, we welcome discussions and ideas. Feel free to open issues for feature suggestions or architectural feedback.

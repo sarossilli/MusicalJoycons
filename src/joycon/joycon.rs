@@ -23,7 +23,7 @@ impl JoyCon {
                 1 => JoyConType::Left,
                 _ => return Err(JoyConError::InvalidDevice("Unknown interface")),
             },
-            _ => return Err(JoyConError::InvalidDevice("Unknown product ID")),
+            other_id => return Err(JoyConError::InvalidDevice("Unknown product ID")), // Handle other JoyCons
         };
 
         Ok(Self {

@@ -72,7 +72,8 @@ impl JoyconInterface {
         // Pack data according to the correct format for each Joycon type
         let offset = match joycon.get_type() {
             JoyConType::Right => 6, // Right JoyCon data starts at byte 6
-            _ => 2,                 // Left JoyCon/Pro Controller data starts at byte 2
+            JoyConType::Left | JoyConType::ProController => 2, // Left JoyCon/Pro Controller data starts at byte 2
+            JoyConType::Other(_) => 2, // Default to the same offset as Left/ProController
         };
 
         buf[offset] = (hf & 0xFF) as u8; // Low byte of HF

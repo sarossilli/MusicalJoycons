@@ -48,7 +48,16 @@ fn test_invalid_device() {
     };
 
     let result = JoyCon::new(&device_info);
-    assert!(matches!(result, Err(JoyConError::InvalidDevice(_))));
+    assert!(matches!(result, Err(JoyConError::InvalidDevice("Unknown product ID"))));
+
+    let device_info = DeviceInfo {
+        product_id: musical_joycons::joycon::types::JOYCON_CHARGING_GRIP,
+        interface_number: 2, // Invalid interface number
+        serial: String::from("123456"),
+    };
+    
+    let result = JoyCon::new(&device_info);
+    assert!(matches!(result, Err(JoyConError::InvalidDevice("Unknown interface"))));
 }
 
 #[tokio::test]

@@ -207,9 +207,8 @@ fn convert_track_with_tempo(
 
 pub fn parse_midi_to_rumble(
     midi_data: &[u8],
-    primary_selection: Option<usize>,
-    secondary_selection: Option<usize>,
-) -> Result<(RumbleTrack, Option<RumbleTrack>), ParseError> {
+    track_selections: Vec<Option<usize>>,
+) -> Result<Vec<RumbleTrack>, ParseError> {
     let smf = Smf::parse(midi_data)?;
 
     let ticks_per_beat = match smf.header.timing {
@@ -256,9 +255,7 @@ pub fn parse_midi_to_rumble(
         println!("-------------------------");
     }
 
-    let selected_tracks = if let Some(primary_idx) = primary_selection {
-        vec![&track_metrics[primary_idx]]
-    } else {
+    let selected_tracks: Vec<&TrackMetrics> = if track_selections.iter().all(Option::is_none) {
         track_metrics.sort_by(|a, b| {
             b.calculate_score()
                 .partial_cmp(&a.calculate_score())
@@ -267,7 +264,12 @@ pub fn parse_midi_to_rumble(
         track_metrics
             .iter()
             .filter(|m| !m.is_percussion && m.note_count > 0)
-            .take(1)
+            .take(track_selections.len())
+            .collect()
+    } else {
+        track_selections
+            .iter()
+            .filter_map(|&selection| selection.and_then(|idx| track_metrics.get(idx)))
             .collect()
     };
 
@@ -275,71 +277,28 @@ pub fn parse_midi_to_rumble(
         return Err(ParseError::NoTracks);
     }
 
-    let primary_track = convert_track_with_tempo(
-        &smf.tracks[selected_tracks[0].track_index],
-        &tempo_changes,
-        ticks_per_beat,
-    )?;
-
-    let secondary_track = if let Some(secondary_idx) = secondary_selection {
-        Some(convert_track_with_tempo(
-            &smf.tracks[secondary_idx],
-            &tempo_changes,
-            ticks_per_beat,
-        )?)
-    } else if primary_selection.is_none() {
-        track_metrics
-            .iter()
-            .filter(|m| {
-                !m.is_percussion
-                    && m.note_count > 0
-                    && m.track_index != selected_tracks[0].track_index
-            })
-            .take(1)
-            .next()
-            .map(|track| {
-                convert_track_with_tempo(
-                    &smf.tracks[track.track_index],
-                    &tempo_changes,
-                    ticks_per_beat,
-                )
-            })
-            .transpose()?
-    } else {
-        None
-    };
+    let rumble_tracks: Vec<RumbleTrack> = selected_tracks
+        .iter()
+        .map(|track| {
+            convert_track_with_tempo(
+                &smf.tracks[track.track_index],
+                &tempo_changes,
+                ticks_per_beat,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     println!("\n🎯 Track Selection:");
-    println!(
-        "Primary Track: {} (Score: {:.2})",
-        selected_tracks[0]
-            .track_name
-            .as_deref()
-            .unwrap_or("Unnamed Track"),
-        selected_tracks[0].calculate_score()
-    );
-
-    if selected_tracks.len() > 1 {
+    for (i, track) in selected_tracks.iter().enumerate() {
         println!(
-            "Secondary Track: {} (Score: {:.2})",
-            selected_tracks[1]
-                .track_name
-                .as_deref()
-                .unwrap_or("Unnamed Track"),
-            selected_tracks[1].calculate_score()
-        );
-
-        println!("\nTrack Relationship:");
-        println!(
-            "  Primary:   {} notes/sec, {} unique notes",
-            selected_tracks[0].note_density, selected_tracks[0].unique_notes
-        );
-        println!(
-            "  Secondary: {} notes/sec, {} unique notes",
-            selected_tracks[1].note_density, selected_tracks[1].unique_notes
+            "Track {}: {} (Score: {:.2})",
+            i + 1,
+            track.track_name.as_deref().unwrap_or("Unnamed Track"),
+            track.calculate_score()
         );
     }
-    Ok((primary_track, secondary_track))
+
+    Ok(rumble_tracks)
 }
 
 #[cfg(test)]
@@ -401,10 +360,11 @@ mod tests {
         ];
 
         let midi_data = create_test_midi(vec![track]);
-        let (primary_track, secondary_track) =
-            parse_midi_to_rumble(&midi_data, None, None).expect("Failed to parse MIDI");
+        let rumble_tracks =
+            parse_midi_to_rumble(&midi_data, vec![None]).expect("Failed to parse MIDI");
 
-        assert!(secondary_track.is_none());
+        assert_eq!(rumble_tracks.len(), 1);
+        let primary_track = &rumble_tracks[0];
         assert!(!primary_track.commands.is_empty());
 
         // Verify the rumble commands
@@ -433,8 +393,11 @@ mod tests {
         ];
 
         let midi_data = create_test_midi(vec![track]);
-        let (primary_track, _) =
-            parse_midi_to_rumble(&midi_data, None, None).expect("Failed to parse MIDI");
+        let rumble_tracks =
+            parse_midi_to_rumble(&midi_data, vec![None]).expect("Failed to parse MIDI");
+
+        assert_eq!(rumble_tracks.len(), 1);
+        let primary_track = &rumble_tracks[0];
 
         // Second note should have different timing due to tempo change
         let commands = &primary_track.commands;
@@ -448,10 +411,10 @@ mod tests {
         let track2 = vec![create_note_on(0, 48, 100), create_note_off(480, 48)];
 
         let midi_data = create_test_midi(vec![track1, track2]);
-        let (primary_track, secondary_track) =
-            parse_midi_to_rumble(&midi_data, None, None).expect("Failed to parse MIDI");
+        let rumble_tracks =
+            parse_midi_to_rumble(&midi_data, vec![None, None]).expect("Failed to parse MIDI");
 
-        assert!(secondary_track.is_some());
+        assert_eq!(rumble_tracks.len(), 2);
     }
 
     #[test]
@@ -463,8 +426,11 @@ mod tests {
         let midi_data = create_test_midi(vec![track1, track2]);
 
         // Test explicit primary track selection
-        let (primary_track, _) =
-            parse_midi_to_rumble(&midi_data, Some(1), None).expect("Failed to parse MIDI");
+        let rumble_tracks =
+            parse_midi_to_rumble(&midi_data, vec![Some(1), Some(0)]).expect("Failed to parse MIDI");
+
+        assert_eq!(rumble_tracks.len(), 2);
+        let primary_track = &rumble_tracks[0];
 
         // The frequency of the first note should match track2
         assert!(primary_track.commands[0].frequency < 500.0); // Lower note
@@ -503,14 +469,14 @@ mod tests {
     #[test]
     fn test_empty_midi() {
         let midi_data = create_test_midi(vec![vec![]]);
-        let result = parse_midi_to_rumble(&midi_data, None, None);
+        let result = parse_midi_to_rumble(&midi_data, vec![None]);
         assert!(matches!(result, Err(ParseError::NoTracks)));
     }
 
     #[test]
     fn test_invalid_midi_data() {
         let invalid_data = vec![0, 1, 2, 3]; // Invalid MIDI data
-        let result = parse_midi_to_rumble(&invalid_data, None, None);
+        let result = parse_midi_to_rumble(&invalid_data, vec![None]);
         assert!(matches!(result, Err(ParseError::MidiError(_))));
     }
 }

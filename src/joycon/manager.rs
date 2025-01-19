@@ -1,5 +1,5 @@
 use super::joycon::JoyCon;
-use super::types::{DeviceInfo, JoyConError, JOYCON_L_BT, JOYCON_R_BT, PRO_CONTROLLER, VENDOR_ID};
+use super::types::{DeviceInfo, JoyConError};
 use hidapi::HidApi;
 
 pub struct JoyConManager {
