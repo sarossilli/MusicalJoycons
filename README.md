@@ -6,14 +6,15 @@
 ## Project Vision
 Taking the novel concept of MIDI playback through Nintendo Switch JoyCon haptics and reimagining it in Rust. This isn't just a port - it's a complete architectural rethink leveraging Rust's robust type system and zero-cost abstractions.
 
-I mainly want to do this to learn rust - but also I think the C++ version was poorly made durring my time in school. This should be a better version that is actually thought out.
+I mainly want to do this to learn rust - but also I think the C++ version was poorly made during my time in school. This should be a better version that is actually thought out.
 
 ## 🚧 Development Status
 This is an active rewrite of the [original C++ implementation](https://github.com/sarossilli/Musical-Joycons). While we're making steady progress, expect significant architectural changes and evolving APIs.
 
-## Core Features (In Development)
+## Core Features
 * **Multi-track Support**: Independent control over dual JoyCon haptics
 * **Zero-overhead Abstractions**: Leveraging Rust's type system for performant, safe hardware interaction
+* **Track Merging and Ordering**: Dynamically merge and order tracks based on their score throughout the song
 
 ## Technical Architecture
 ```
