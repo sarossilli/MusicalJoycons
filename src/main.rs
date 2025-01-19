@@ -1,6 +1,6 @@
 use musical_joycons::joycon::{JoyCon, JoyConError, JoyConManager};
 use musical_joycons::midi::rubmle::parse_midi_to_rumble;
-use std::io::{self, Write};
+use std::io::{self};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -29,28 +29,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn get_user_track_selection(track_count: usize, prompt: &str) -> Option<usize> {
-    println!("\n{}", prompt);
-    println!("Enter track number or press Enter for automatic selection:");
-
-    io::stdout().flush().ok();
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).ok()?;
-
-    let input = input.trim();
-    if input.is_empty() {
-        return None;
-    }
-
-    match input.parse::<usize>() {
-        Ok(index) if index < track_count => Some(index),
-        _ => {
-            println!("❌ Invalid track number, using automatic selection");
-            None
-        }
-    }
-}
-
 fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     // Connect to JoyCons
     let joycons = connect_to_joycons()?;
@@ -58,34 +36,8 @@ fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     println!("🎵 Loading MIDI file: {:?}", path);
     let midi_data = std::fs::read(&path)?;
 
-    // First parse to show track information and get track count
     let tracks = parse_midi_to_rumble(&midi_data, vec![None; joycons.len()])?;
 
-    // Get track count from output
-    println!("\nWould you like to select specific tracks? y/n (Press Enter to skip)");
-    println!("Note: Automatic selection will choose the best tracks for each JoyCon");
-
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-
-    let track_selections: Vec<Option<usize>> = if input.trim().is_empty() {
-        vec![None; joycons.len()]
-    } else {
-        (0..joycons.len())
-            .map(|i| {
-                get_user_track_selection(
-                    tracks.len(),
-                    &format!("Select track for JoyCon {}:", i + 1),
-                )
-            })
-            .collect()
-    };
-
-    // Parse again with user selections
-    let tracks = parse_midi_to_rumble(&midi_data, track_selections)?;
-
-    // Create synchronization signal
     let start_signal = Arc::new(Mutex::new(false));
     let mut handles = Vec::new();
 
