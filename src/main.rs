@@ -1,4 +1,5 @@
 use musical_joycons::device_audio::audio_input::AudioInput;
+use musical_joycons::joycon::{JoyCon, JoyConManager};
 use musical_joycons::midi::playback::play_midi_file;
 use std::io::{self};
 use std::path::PathBuf;
@@ -31,23 +32,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         2 => {
             println!("🎤 Capturing audio...");
+            
+            // Initialize JoyCons
+            let joycons = initialize_joycons()?;
+            
+            if joycons.is_empty() {
+                println!("❌ No JoyCons found!");
+                return Ok(());
+            }
 
-            // Create a new instance of AudioInput
-            let mut audio_input = AudioInput::new()?;
+            println!("✅ Found {} JoyCons", joycons.len());
 
-            // Start capturing audio
+            // Create audio input with JoyCons
+            let mut audio_input = AudioInput::new_with_joycons(joycons)?;
             audio_input.start()?;
-
-            // Capture audio and process it in the callback
-            audio_input.capture(|buffer| {
-                // Print out the captured audio data (sample preview)
-                println!("Captured audio buffer with {} samples.", buffer.len());
-                // You can add further processing here if needed (e.g., FFT)
-            });
-
-            println!("Audio capture started. Press Enter to stop.");
-            let mut stop = String::new();
-            io::stdin().read_line(&mut stop)?;
         }
         _ => {
             println!("❌ Invalid choice.");
@@ -55,4 +53,21 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     Ok(())
+}
+
+fn initialize_joycons() -> Result<Vec<JoyCon>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut manager = JoyConManager::new()?;
+    let devices = manager.scan_for_devices()?;
+    let mut joycons = Vec::new();
+
+    for device in devices {
+        // The JoyCon is already initialized in scan_for_devices
+        joycons.push(device);
+    }
+
+    if !joycons.is_empty() {
+        println!("✅ Successfully connected to {} JoyCon(s)", joycons.len());
+    }
+
+    Ok(joycons)
 }

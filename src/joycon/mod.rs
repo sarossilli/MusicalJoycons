@@ -5,8 +5,8 @@ pub use self::manager::JoyConManager;
 pub use self::joycon::JoyCon;
 pub use self::types::{JoyConError, JoyConType};
 
-mod manager;
-mod joycon;
+pub mod manager;
+pub mod joycon;
 
 #[cfg(test)]
 mod tests;
