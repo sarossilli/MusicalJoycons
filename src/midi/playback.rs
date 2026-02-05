@@ -1,4 +1,27 @@
 //! MIDI playback coordination across multiple JoyCons.
+//!
+//! This module provides the high-level playback functionality, coordinating
+//! multiple JoyCons to play different tracks from a MIDI file simultaneously.
+//!
+//! # Playback Architecture
+//!
+//! The playback system uses multiple threads:
+//!
+//! 1. **Main thread**: Loads MIDI, initializes JoyCons, coordinates startup
+//! 2. **Ranking thread**: Continuously evaluates track activity and reassigns tracks
+//! 3. **JoyCon threads**: One per device, handles rumble command execution
+//!
+//! # Track Assignment
+//!
+//! Initial track assignment is based on track scores. During playback:
+//! - The ranking thread evaluates upcoming note activity every 250ms
+//! - If a better track is found, the assignment is updated
+//! - JoyCon threads switch to new tracks during silent periods (note-off events)
+//!
+//! # Synchronization
+//!
+//! All JoyCon threads wait for a shared start signal before beginning playback,
+//! ensuring synchronized start across all devices.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -9,8 +32,22 @@ use crate::joycon::JoyConManager;
 
 use super::rumble::{parse_midi_to_rumble, RumbleCommand, TrackMergeController};
 
+/// How often the ranking thread re-evaluates track assignments.
 const RANKING_WINDOW: Duration = Duration::from_millis(500);
 
+/// Finds the command index at or just before the specified time.
+///
+/// Used when switching tracks to find the right starting position.
+///
+/// # Arguments
+///
+/// * `commands` - The command sequence to search
+/// * `target_time` - The time position to find
+///
+/// # Returns
+///
+/// Index of the first command that would execute after `target_time`,
+/// or `commands.len()` if past the end.
 fn find_commands_at_time(commands: &[RumbleCommand], target_time: Duration) -> usize {
     let mut accumulated_time = Duration::ZERO;
     
@@ -24,6 +61,20 @@ fn find_commands_at_time(commands: &[RumbleCommand], target_time: Duration) -> u
     commands.len()
 }
 
+/// Determines if a command represents a note-off transition.
+///
+/// A note-off occurs when the previous command had non-zero amplitude
+/// and the current command has zero amplitude. This is the ideal time
+/// for track switching as it won't interrupt a sounding note.
+///
+/// # Arguments
+///
+/// * `cmd` - The current command
+/// * `prev_cmd` - The previous command, if any
+///
+/// # Returns
+///
+/// `true` if this is a note-off transition, `false` otherwise.
 fn is_note_off(cmd: &RumbleCommand, prev_cmd: Option<&RumbleCommand>) -> bool {
     match prev_cmd {
         Some(prev) => prev.amplitude > 0.0 && cmd.amplitude == 0.0,
@@ -31,6 +82,54 @@ fn is_note_off(cmd: &RumbleCommand, prev_cmd: Option<&RumbleCommand>) -> bool {
     }
 }
 
+/// Plays a MIDI file through connected JoyCons.
+///
+/// This is the main entry point for MIDI playback. It handles the complete
+/// process from file loading through synchronized multi-JoyCon playback.
+///
+/// # Process
+///
+/// 1. Initialize the JoyCon manager and connect to devices
+/// 2. Load and parse the MIDI file
+/// 3. Analyze tracks and assign the best ones to available JoyCons
+/// 4. Start synchronized playback with dynamic track reassignment
+/// 5. Wait for all tracks to complete
+///
+/// # Arguments
+///
+/// * `path` - Path to the MIDI file to play
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - No JoyCons can be found or connected
+/// - The MIDI file cannot be read or parsed
+/// - No playable tracks are found in the file
+/// - HID communication fails during playback
+///
+/// # Example
+///
+/// ```no_run
+/// use musical_joycons::midi::play_midi_file;
+/// use std::path::PathBuf;
+///
+/// let path = PathBuf::from("song.mid");
+/// play_midi_file(path)?;
+/// # Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+/// ```
+///
+/// # Blocking
+///
+/// This function blocks until playback completes. For non-blocking playback,
+/// call from a separate thread.
+///
+/// # Console Output
+///
+/// The function prints status messages during playback:
+/// - Device discovery progress
+/// - Track assignment information
+/// - Dynamic track switching events
+/// - Playback completion
 pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let manager = JoyConManager::new()?;
     let joycons = manager.connect_and_initialize_joycons()?;

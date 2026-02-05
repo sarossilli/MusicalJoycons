@@ -1,12 +1,48 @@
 //! Low-level JoyCon HID communication interface.
+//!
+//! This module handles the raw HID protocol for communicating with JoyCon devices.
+//! It implements the rumble encoding algorithm and packet formatting required by
+//! the JoyCon firmware.
+//!
+//! # Protocol Details
+//!
+//! JoyCon HID packets are 49 bytes with the following structure:
+//! - Byte 0: Command type (0x10 for rumble, 0x01 for subcommand)
+//! - Byte 1: Timing byte (packet counter)
+//! - Bytes 2-9: Rumble data (4 bytes per motor, left then right)
+//! - Bytes 10+: Subcommand data (if applicable)
+//!
+//! # Rumble Encoding
+//!
+//! The JoyCon uses a proprietary rumble encoding:
+//! - Frequency is encoded logarithmically
+//! - Amplitude has different encoding for high/low frequency components
+//! - Left and Right JoyCons use different byte offsets
 
 use super::device::JoyCon;
 use super::types::{Command, JoyConError, JoyConType, Subcommand};
 
 /// Internal interface for JoyCon HID communication.
+///
+/// This struct provides static methods for sending commands and rumble data
+/// to JoyCon devices. It handles all the low-level encoding and packet formatting.
 pub(crate) struct JoyconInterface;
 
 impl JoyconInterface {
+    /// Sends a command with optional subcommand to the JoyCon.
+    ///
+    /// # Arguments
+    ///
+    /// * `joycon` - The JoyCon device to send the command to
+    /// * `command` - The main command type
+    /// * `subcommand` - Optional subcommand for configuration
+    /// * `data` - Additional data bytes for the subcommand
+    ///
+    /// # Packet Structure
+    ///
+    /// ```text
+    /// [Command][Timing][Rumble x8][Subcommand][Data...]
+    /// ```
     pub fn send_command(
         joycon: &mut JoyCon,
         command: Command,
@@ -34,6 +70,38 @@ impl JoyconInterface {
         Ok(())
     }
 
+    /// Sends a rumble command with the specified frequency and amplitude.
+    ///
+    /// This method encodes the frequency and amplitude into the JoyCon's
+    /// proprietary rumble format and sends it as a HID packet.
+    ///
+    /// # Frequency Encoding
+    ///
+    /// The JoyCon encodes frequency logarithmically:
+    /// ```text
+    /// encoded_freq = round(log2(frequency / 10) * 32)
+    /// ```
+    ///
+    /// This is then split into high-frequency (HF) and low-frequency (LF)
+    /// components based on hardware-specific thresholds.
+    ///
+    /// # Amplitude Encoding
+    ///
+    /// Amplitude encoding varies by intensity:
+    /// - High (>0.23): `round(log2(amplitude * 8.7) * 32)`
+    /// - Medium (>0.12): `round(log2(amplitude * 17.0) * 16)`
+    /// - Low: Same as medium
+    ///
+    /// # JoyCon-Specific Offsets
+    ///
+    /// - Left JoyCon / Pro Controller: Rumble data at bytes 2-5
+    /// - Right JoyCon: Rumble data at bytes 6-9
+    ///
+    /// # Arguments
+    ///
+    /// * `joycon` - The JoyCon device to send rumble to
+    /// * `frequency` - Frequency in Hz (clamped to 0-1252)
+    /// * `amplitude` - Amplitude from 0.0 to 1.0
     pub fn send_rumble(
         joycon: &mut JoyCon,
         frequency: f32,

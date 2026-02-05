@@ -1,12 +1,25 @@
-//! JoyCon-specific types and constants.
+//! JoyCon-specific types, constants, and error definitions.
+//!
+//! This module contains the core types used throughout the JoyCon functionality,
+//! including device identification, error types, and HID protocol constants.
 
-/// Nintendo vendor ID
+// =============================================================================
+// USB/HID Constants
+// =============================================================================
+
+/// Nintendo's USB Vendor ID (0x057E)
 pub(crate) const VENDOR_ID: u16 = 0x057e;
 
-/// Product IDs for various Nintendo controllers
+/// USB Product ID for Left JoyCon (Bluetooth mode)
 pub(crate) const JOYCON_L_BT: u16 = 0x2006;
+
+/// USB Product ID for Right JoyCon (Bluetooth mode)
 pub(crate) const JOYCON_R_BT: u16 = 0x2007;
+
+/// USB Product ID for Nintendo Switch Pro Controller
 pub(crate) const PRO_CONTROLLER: u16 = 0x2009;
+
+/// USB Product ID for JoyCon Charging Grip (USB mode)
 pub(crate) const JOYCON_CHARGING_GRIP: u16 = 0x200e;
 
 /// HID commands for JoyCon communication.

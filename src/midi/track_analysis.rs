@@ -1,4 +1,27 @@
 //! MIDI track analysis and metrics calculation.
+//!
+//! This module provides the [`analyze_track`] function for extracting
+//! musical characteristics from MIDI tracks. The resulting metrics are
+//! used to score and classify tracks for optimal rumble playback.
+//!
+//! # Analysis Process
+//!
+//! The analyzer makes a single pass through the track, collecting:
+//! - Note events (pitch, velocity, timing, duration)
+//! - Metadata (track name, instrument)
+//! - Channel information (for percussion detection)
+//! - Program changes (for instrument identification)
+//!
+//! # Computed Metrics
+//!
+//! From the raw data, the following metrics are computed:
+//!
+//! - **Note density**: Notes per second of track duration
+//! - **Pitch range**: Difference between highest and lowest notes
+//! - **Melodic movement**: Average pitch change between notes
+//! - **Velocity variance**: Standard deviation of note velocities
+//! - **Sustain ratio**: Fraction of time with active notes
+//! - **Rhythmic regularity**: Consistency of note timing
 
 use std::collections::HashMap;
 
@@ -6,10 +29,53 @@ use midly::{Track, TrackEventKind};
 
 use super::track_types::TrackMetrics;
 
-/// Analyzes a MIDI track and returns metrics used for scoring and classification.
+/// Analyzes a MIDI track and returns comprehensive metrics.
 ///
-/// This function examines note events, timing, and metadata to determine
-/// track characteristics like note density, velocity patterns, and pitch range.
+/// This function performs a complete analysis of a MIDI track, extracting
+/// all the information needed for scoring and classification.
+///
+/// # Arguments
+///
+/// * `track` - The MIDI track to analyze (slice of track events)
+/// * `ticks_per_beat` - MIDI timing resolution (from file header)
+/// * `default_tempo` - Default tempo in microseconds per beat (typically 500,000 = 120 BPM)
+///
+/// # Returns
+///
+/// A [`TrackMetrics`] struct containing all computed metrics. The `track_type`
+/// field is set based on detected characteristics.
+///
+/// # Timing Calculation
+///
+/// Time values are calculated using:
+/// ```text
+/// time_seconds = ticks * (tempo_microseconds / ticks_per_beat) / 1,000,000
+/// ```
+///
+/// Note: This function uses the `default_tempo` for all calculations.
+/// For accurate timing with tempo changes, use the full conversion in `rumble.rs`.
+///
+/// # Percussion Detection
+///
+/// Tracks on MIDI channel 10 (index 9) are automatically marked as percussion
+/// and assigned `TrackType::Drums`.
+///
+/// # Example
+///
+/// ```no_run
+/// use musical_joycons::midi::analyze_track;
+/// use midly::Smf;
+///
+/// let midi_data = std::fs::read("song.mid")?;
+/// let smf = Smf::parse(&midi_data)?;
+///
+/// for (i, track) in smf.tracks.iter().enumerate() {
+///     let metrics = analyze_track(track, 480.0, 500_000);
+///     println!("Track {}: {} notes, type: {:?}",
+///              i, metrics.note_count, metrics.track_type);
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn analyze_track(track: &Track, ticks_per_beat: f32, default_tempo: u32) -> TrackMetrics {
     let mut metrics = TrackMetrics::default();
     let mut active_notes: HashMap<u8, f32> = HashMap::new();

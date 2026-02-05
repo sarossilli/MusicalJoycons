@@ -1,23 +1,96 @@
 //! MIDI track type detection and scoring.
+//!
+//! This module provides the [`TrackMetrics`] struct for analyzing MIDI tracks
+//! and the [`TrackType`] enum for classifying track musical roles.
+//!
+//! # Track Scoring
+//!
+//! Tracks are scored based on how well they translate to rumble playback.
+//! The scoring algorithm considers:
+//!
+//! - **Note density**: Tracks with moderate density (2-4 notes/sec) score higher
+//! - **Melodic movement**: Some pitch variation is preferred
+//! - **Velocity variance**: Dynamic tracks are more interesting
+//! - **Track type**: Melody and harmony tracks score higher than drums
+//!
+//! # Track Type Detection
+//!
+//! Track types are detected using:
+//! 1. MIDI program number (instrument)
+//! 2. Track/instrument name keywords
+//! 3. Musical characteristics (pitch range, density)
 
 /// Metrics and analysis data for a MIDI track.
+///
+/// This struct contains all the information needed to score and classify
+/// a MIDI track for rumble playback. It is populated by [`analyze_track`](super::analyze_track).
+///
+/// # Scoring
+///
+/// Use [`calculate_score`](Self::calculate_score) to get an overall quality score
+/// that can be used to rank tracks for playback selection.
+///
+/// # Example
+///
+/// ```
+/// use musical_joycons::midi::TrackMetrics;
+///
+/// let metrics = TrackMetrics::default();
+/// let score = metrics.calculate_score();
+/// println!("Track score: {:.2}", score);
+/// ```
 #[derive(Debug, Clone)]
 pub struct TrackMetrics {
+    /// Index of this track in the original MIDI file (0-based).
     pub track_index: usize,
+
+    /// Total number of note-on events in the track.
     pub note_count: usize,
+
+    /// Number of unique pitches used in the track.
     pub unique_notes: usize,
+
+    /// Average MIDI velocity (normalized to 0.0-1.0).
     pub avg_velocity: f32,
+
+    /// Standard deviation of velocity values.
+    /// Higher values indicate more dynamic range.
     pub velocity_variance: f32,
+
+    /// Average duration of notes in seconds.
     pub avg_note_duration: f32,
+
+    /// Total duration of the track in seconds.
     pub total_duration: f32,
+
+    /// Notes per second (note_count / total_duration).
     pub note_density: f32,
+
+    /// Whether this track is on MIDI channel 10 (percussion).
     pub is_percussion: bool,
+
+    /// Track name from MIDI metadata (if present).
     pub track_name: Option<String>,
+
+    /// Instrument name from MIDI metadata (if present).
     pub track_instrument: Option<String>,
+
+    /// Detected musical role of this track.
     pub track_type: TrackType,
+
+    /// Difference between highest and lowest MIDI note numbers.
     pub pitch_range: u8,
+
+    /// Average pitch change between consecutive notes.
+    /// Higher values indicate more melodic movement.
     pub melodic_movement: f32,
+
+    /// Ratio of time notes are sounding vs. total time.
+    /// Value from 0.0 (all silence) to 1.0 (continuous sound).
     pub sustain_ratio: f32,
+
+    /// Measure of timing consistency (0.0 to 1.0).
+    /// Higher values indicate more regular rhythm.
     pub rhythmic_regularity: f32,
 }
 
@@ -73,6 +146,43 @@ impl Default for TrackMetrics {
 }
 
 impl TrackMetrics {
+    /// Calculates an overall quality score for this track.
+    ///
+    /// The score represents how well this track will work for rumble playback.
+    /// Higher scores indicate better tracks. Percussion tracks always return 0.0.
+    ///
+    /// # Scoring Components
+    ///
+    /// The score is computed from weighted components:
+    ///
+    /// | Component | Weight | Ideal Value |
+    /// |-----------|--------|-------------|
+    /// | Note density | 25% | 3 notes/sec |
+    /// | Velocity variance | 10% | Higher is better |
+    /// | Note variety | 15% | 50% unique |
+    /// | Note duration | 15% | 0.3 seconds |
+    /// | Pitch range | 15% | ~38 semitones |
+    /// | Melodic movement | 10% | 2 semitones avg |
+    /// | Sustain ratio | 5% | 60% |
+    /// | Rhythmic regularity | 5% | Higher is better |
+    ///
+    /// # Track Type Multipliers
+    ///
+    /// The base score is then multiplied based on track type:
+    /// - Harmony: 1.5x
+    /// - Melody: 1.3x
+    /// - Bass: 1.1x
+    /// - Vocals: 1.1x
+    /// - Drums: 0.2x
+    ///
+    /// # Bonus
+    ///
+    /// Tracks with ideal characteristics get an additional 1.3x bonus.
+    ///
+    /// # Returns
+    ///
+    /// A score value, typically between 0.0 and 1.0 for most tracks,
+    /// but can exceed 1.0 with multipliers.
     pub fn calculate_score(&self) -> f32 {
         if self.is_percussion {
             return 0.0;
@@ -159,7 +269,27 @@ impl TrackMetrics {
         base_score * type_multiplier * bonus_multiplier
     }
 
-    // Add new method to calculate score for a specific time window
+    /// Calculates a score for a specific time window of this track.
+    ///
+    /// Unlike [`calculate_score`](Self::calculate_score) which evaluates the whole track,
+    /// this method scores a specific section. It's used during playback to determine
+    /// if switching to this track would be beneficial.
+    ///
+    /// # Arguments
+    ///
+    /// * `window_note_count` - Number of notes in the time window
+    /// * `window_duration` - Duration of the window in seconds
+    ///
+    /// # Scoring
+    ///
+    /// The score primarily weights note count (80%), with bonuses for:
+    /// - Ideal note density (around 3 notes/sec): up to 20% bonus
+    /// - Melody tracks: 15% bonus
+    /// - Bass tracks: 10% bonus
+    ///
+    /// # Returns
+    ///
+    /// Window score (0.0 for percussion, otherwise positive).
     pub fn calculate_window_score(&self, window_note_count: usize, window_duration: f32) -> f32 {
         if self.is_percussion {
             return 0.0;
@@ -195,6 +325,40 @@ impl TrackMetrics {
         note_score * density_multiplier * type_multiplier
     }
 
+    /// Determines and sets the track type based on available information.
+    ///
+    /// This method uses a multi-stage detection process:
+    ///
+    /// 1. **Percussion check**: If the track is on MIDI channel 10, it's drums
+    /// 2. **Program number**: MIDI instrument numbers map to categories
+    /// 3. **Name keywords**: Track/instrument names are searched for hints
+    /// 4. **Musical characteristics**: Density, pitch range, sustain patterns
+    ///
+    /// # Arguments
+    ///
+    /// * `program_number` - MIDI program number (0-127) if a Program Change
+    ///   event was found, or `None`
+    ///
+    /// # Program Number Mapping
+    ///
+    /// | Program Range | Track Type |
+    /// |---------------|------------|
+    /// | 0-7 | Melody (Piano) |
+    /// | 8-31 | Harmony (Chromatic/Organ/Guitar) |
+    /// | 32-39 | Bass |
+    /// | 40-55 | Harmony (Strings/Ensemble) |
+    /// | 56-87 | Melody (Brass/Reed/Pipe/Synth Lead) |
+    /// | 88-103 | Harmony (Synth Pad/Effects) |
+    /// | 104-111 | Melody (Ethnic) |
+    /// | 112-119 | Drums (Percussive) |
+    /// | 120-127 | Unknown (Sound Effects) |
+    ///
+    /// # Fallback Detection
+    ///
+    /// If no program number or name hints are available:
+    /// - High density + many unique notes → Melody
+    /// - High sustain ratio → Harmony
+    /// - Otherwise → Unknown
     pub fn determine_track_type(&mut self, program_number: Option<u8>) {
         if self.is_percussion {
             self.track_type = TrackType::Drums;
