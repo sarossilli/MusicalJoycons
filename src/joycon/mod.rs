@@ -1,12 +1,16 @@
+//! JoyCon device management and communication.
+//!
+//! This module provides:
+//! - Device discovery and connection management via [`JoyConManager`]
+//! - Individual JoyCon control via [`JoyCon`]
+//! - Device type identification and error handling
+
+mod device;
 mod interface;
-pub mod types;
-
-pub use self::manager::JoyConManager;
-pub use self::joycon::JoyCon;
-pub use self::types::{JoyConError, JoyConType};
-
 mod manager;
-mod joycon;
+mod types;
 
-#[cfg(test)]
-mod tests;
+// Re-export public types
+pub use self::device::JoyCon;
+pub use self::manager::JoyConManager;
+pub use self::types::{DeviceInfo, JoyConError, JoyConType};

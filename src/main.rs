@@ -1,10 +1,10 @@
-use musical_joycons::midi::playback::play_midi_file;
-use std::io::{self};
+use musical_joycons::midi::play_midi_file;
+use std::io;
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("🎮 Musical JoyCons - MIDI Player");
-    println!("===============================");
+    println!("Musical JoyCons - MIDI Player");
+    println!("=============================");
     println!("Drag and drop your MIDI file into this terminal and press Enter:");
 
     let mut input = String::new();
@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let path = PathBuf::from(input.trim().trim_matches('"'));
 
     if !path.exists() {
-        println!("❌ File not found: {:?}", path);
+        eprintln!("Error: File not found: {:?}", path);
         return Ok(());
     }
 

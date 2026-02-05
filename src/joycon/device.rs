@@ -1,11 +1,21 @@
-use super::interface::JoyconInterface;
-use super::types::{Command, DeviceInfo, JoyConError, JoyConType, Subcommand};
-use crate::midi::rubmle::RumbleTrack;
-use hidapi::HidDevice;
+//! Individual JoyCon device control.
+
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use hidapi::HidDevice;
+
+use super::interface::JoyconInterface;
+use super::types::{
+    Command, DeviceInfo, JoyConError, JoyConType, Subcommand,
+    JOYCON_CHARGING_GRIP, JOYCON_L_BT, JOYCON_R_BT, PRO_CONTROLLER,
+};
+use crate::midi::RumbleTrack;
+
+/// Represents a connected Nintendo JoyCon or Pro Controller.
+///
+/// Provides methods for rumble control and MIDI playback.
 pub struct JoyCon {
     handle: Option<HidDevice>,
     device_type: JoyConType,
@@ -13,17 +23,22 @@ pub struct JoyCon {
 }
 
 impl JoyCon {
+    /// Creates a new JoyCon instance from device information.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device type cannot be determined.
     pub fn new(device_info: &DeviceInfo) -> Result<Self, JoyConError> {
         let device_type = match device_info.product_id {
-            crate::joycon::types::JOYCON_L_BT => JoyConType::Left,
-            crate::joycon::types::JOYCON_R_BT => JoyConType::Right,
-            crate::joycon::types::PRO_CONTROLLER => JoyConType::ProController,
-            crate::joycon::types::JOYCON_CHARGING_GRIP => match device_info.interface_number {
+            JOYCON_L_BT => JoyConType::Left,
+            JOYCON_R_BT => JoyConType::Right,
+            PRO_CONTROLLER => JoyConType::ProController,
+            JOYCON_CHARGING_GRIP => match device_info.interface_number {
                 0 | -1 => JoyConType::Right,
                 1 => JoyConType::Left,
                 _ => return Err(JoyConError::InvalidDevice("Unknown interface")),
             },
-            other_id => return Err(JoyConError::InvalidDevice("Unknown product ID")), // Handle other JoyCons
+            _ => return Err(JoyConError::InvalidDevice("Unknown product ID")),
         };
 
         Ok(Self {
@@ -152,7 +167,7 @@ mod tests {
     fn create_test_device_info(product_id: u16) -> DeviceInfo {
         DeviceInfo {
             path: String::new(),
-            vendor_id: 0x057E, // Nintendo vendor ID
+            vendor_id: 0x057E,
             product_id,
             usage_page: 0,
             interface_number: 0,
@@ -162,9 +177,9 @@ mod tests {
 
     #[test]
     fn test_joycon_creation() {
-        let left_info = create_test_device_info(crate::joycon::types::JOYCON_L_BT);
-        let right_info = create_test_device_info(crate::joycon::types::JOYCON_R_BT);
-        let pro_info = create_test_device_info(crate::joycon::types::PRO_CONTROLLER);
+        let left_info = create_test_device_info(JOYCON_L_BT);
+        let right_info = create_test_device_info(JOYCON_R_BT);
+        let pro_info = create_test_device_info(PRO_CONTROLLER);
 
         assert!(matches!(
             JoyCon::new(&left_info).unwrap().get_type(),
@@ -182,12 +197,12 @@ mod tests {
 
     #[test]
     fn test_timing_byte() {
-        let mut joycon = JoyCon::new(&create_test_device_info(crate::joycon::types::JOYCON_L_BT)).unwrap();
-        
+        let mut joycon = JoyCon::new(&create_test_device_info(JOYCON_L_BT)).unwrap();
+
         assert_eq!(joycon.get_timing_byte(), 0);
         joycon.increment_timing_byte();
         assert_eq!(joycon.get_timing_byte(), 1);
-        
+
         // Test wrapping behavior
         joycon.timing_byte = 255;
         joycon.increment_timing_byte();
@@ -196,13 +211,11 @@ mod tests {
 
     #[test]
     fn test_rumble_parameters() {
-        let mut joycon = JoyCon::new(&create_test_device_info(crate::joycon::types::JOYCON_L_BT)).unwrap();
-        
-        // Test amplitude clamping
-        assert!(joycon.rumble(440.0, 1.5).is_err()); // Should fail without device
-        
-        // Test frequency wrapping
-        assert!(joycon.rumble(2504.0, 0.5).is_err()); // Should fail without device but would wrap to 1252.0
-        assert!(joycon.rumble(0.25, 0.5).is_err()); // Should fail without device but would wrap to 1.0
+        let mut joycon = JoyCon::new(&create_test_device_info(JOYCON_L_BT)).unwrap();
+
+        // Should fail without device handle
+        assert!(joycon.rumble(440.0, 1.5).is_err());
+        assert!(joycon.rumble(2504.0, 0.5).is_err());
+        assert!(joycon.rumble(0.25, 0.5).is_err());
     }
 }

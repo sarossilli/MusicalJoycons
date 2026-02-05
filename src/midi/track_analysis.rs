@@ -1,8 +1,15 @@
-use midly::{Track, TrackEventKind};
+//! MIDI track analysis and metrics calculation.
+
 use std::collections::HashMap;
+
+use midly::{Track, TrackEventKind};
 
 use super::track_types::TrackMetrics;
 
+/// Analyzes a MIDI track and returns metrics used for scoring and classification.
+///
+/// This function examines note events, timing, and metadata to determine
+/// track characteristics like note density, velocity patterns, and pitch range.
 pub fn analyze_track(track: &Track, ticks_per_beat: f32, default_tempo: u32) -> TrackMetrics {
     let mut metrics = TrackMetrics::default();
     let mut active_notes: HashMap<u8, f32> = HashMap::new();
@@ -149,16 +156,11 @@ pub fn analyze_track(track: &Track, ticks_per_beat: f32, default_tempo: u32) -> 
     metrics
 }
 
-/// TESTS
-
 #[cfg(test)]
 mod tests {
-    use crate::midi::track_types::TrackType;
-
+    use super::super::track_types::TrackType;
     use super::*;
-    use midly::{
-        Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind,
-    };
+    use midly::{MetaMessage, MidiMessage, TrackEvent, TrackEventKind};
     fn create_note_on(delta: u32, key: u8, velocity: u8) -> TrackEvent<'static> {
         TrackEvent {
             delta: delta.into(),

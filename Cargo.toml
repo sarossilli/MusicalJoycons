@@ -2,21 +2,20 @@
 name = "musical-joycons"
 version = "0.1.0"
 edition = "2021"
+description = "Play MIDI files through Nintendo JoyCon rumble motors"
+license = "MIT"
+repository = "https://github.com/example/musical-joycons"
 
 [dependencies]
-btleplug = "0.11.7"
-tokio = { version = "1", features = ["full"] }
-thiserror = "2.0.9"
 hidapi = "2.6.3"
 midly = "0.5.3"
-clap = { version = "4.5.23", features = ["derive"] }
+thiserror = "2.0.9"
 
 [dev-dependencies]
-mockall = "0.13.1"  # For mocking
-tokio = { version = "1.0", features = ["full", "test-util"] }
+mockall = "0.13.1"
 
 [[bin]]
-name = "musicalJoycons"
+name = "musical_joycons"
 path = "src/main.rs"
 
 [profile.test]

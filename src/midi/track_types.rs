@@ -1,4 +1,7 @@
-#[derive(Debug, Clone)]  // Add Clone here
+//! MIDI track type detection and scoring.
+
+/// Metrics and analysis data for a MIDI track.
+#[derive(Debug, Clone)]
 pub struct TrackMetrics {
     pub track_index: usize,
     pub note_count: usize,
@@ -18,13 +21,20 @@ pub struct TrackMetrics {
     pub rhythmic_regularity: f32,
 }
 
-#[derive(Debug, PartialEq, Clone)]  // Add Clone here
+/// Classification of MIDI track musical role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackType {
+    /// Primary melodic content
     Melody,
+    /// Harmonic/accompaniment content
     Harmony,
+    /// Bass line
     Bass,
+    /// Percussion/drums (channel 10)
     Drums,
+    /// Vocal-like content
     Vocals,
+    /// Could not determine track type
     Unknown,
 }
 

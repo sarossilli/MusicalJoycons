@@ -1,5 +1,9 @@
+//! Low-level JoyCon HID communication interface.
+
+use super::device::JoyCon;
 use super::types::{Command, JoyConError, JoyConType, Subcommand};
-use super::JoyCon;
+
+/// Internal interface for JoyCon HID communication.
 pub(crate) struct JoyconInterface;
 
 impl JoyconInterface {

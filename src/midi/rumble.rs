@@ -1,36 +1,58 @@
-use crate::midi::{track_analysis::analyze_track, track_types::TrackMetrics};
-use midly::{Smf, Track, TrackEventKind};
+//! MIDI to rumble command conversion.
+
 use std::time::Duration;
+
+use midly::{Smf, Track, TrackEventKind};
 use thiserror::Error;
 
+use super::track_analysis::analyze_track;
+use super::track_types::TrackMetrics;
+
+/// A single rumble command to send to a JoyCon.
 #[derive(Debug, Clone)]
 pub struct RumbleCommand {
+    /// Frequency in Hz (0.0 for silence)
     pub frequency: f32,
+    /// Amplitude from 0.0 to 1.0
     pub amplitude: f32,
+    /// Time to wait before executing this command
     pub wait_before: Duration,
 }
 
+/// A point in time where track switching may occur.
 #[derive(Debug, Clone)]
 pub struct TrackSwitchPoint {
+    /// Time offset from track start
     pub time: Duration,
+    /// Index of the alternative track to switch to
     pub alternative_track_index: usize,
 }
 
+/// A sequence of rumble commands for a single MIDI track.
 #[derive(Debug, Clone)]
 pub struct RumbleTrack {
+    /// The rumble commands to execute
     pub commands: Vec<RumbleCommand>,
+    /// Total duration of the track
     pub total_duration: Duration,
-    pub switch_points: Vec<TrackSwitchPoint>,  // New field
-    pub track_index: usize,                    // New field
-    pub metrics: TrackMetrics,  // Add this field
+    /// Points where track switching is possible
+    pub switch_points: Vec<TrackSwitchPoint>,
+    /// Original track index in the MIDI file
+    pub track_index: usize,
+    /// Analysis metrics for this track
+    pub metrics: TrackMetrics,
 }
 
+/// Errors that can occur during MIDI parsing.
 #[derive(Debug, Error)]
 pub enum ParseError {
+    /// Failed to read the MIDI file from disk.
     #[error("Failed to read MIDI file: {0}")]
     FileError(#[from] std::io::Error),
+    /// Failed to parse the MIDI file format.
     #[error("Failed to parse MIDI file: {0}")]
     MidiError(#[from] midly::Error),
+    /// The MIDI file contains no playable tracks.
     #[error("No tracks found")]
     NoTracks,
 }
@@ -60,7 +82,7 @@ fn collect_tempo_changes(smf: &Smf) -> Vec<TempoChange> {
     for track in smf.tracks.iter() {
         let mut current_time = 0;
         for event in track.iter() {
-            current_time += event.delta.as_int() as u32;
+            current_time += event.delta.as_int();
             if let TrackEventKind::Meta(midly::MetaMessage::Tempo(tempo)) = event.kind {
                 tempo_changes.push(TempoChange {
                     time: current_time,
@@ -156,7 +178,7 @@ fn convert_track_with_tempo(
     println!("Converting track {}: {} notes", track_index, metrics.note_count);
     
     for event in track.iter() {
-        let delta_ticks = event.delta.as_int() as u32;
+        let delta_ticks = event.delta.as_int();
         if delta_ticks > 0 {
             let wait_duration = ticks_to_duration(
                 current_time_ticks,
@@ -186,59 +208,52 @@ fn convert_track_with_tempo(
 
         current_time_ticks += delta_ticks;
 
-        match event.kind {
-            TrackEventKind::Midi { message, .. } => match message {
-                midly::MidiMessage::NoteOn { key, vel } if vel.as_int() > 0 => {
-                    let frequency = note_to_frequency(i32::from(key.as_int()));
-                    // Scale amplitude to full range (0.0-1.0)
-                    let amplitude = f32::from(vel.as_int()) / 127.0;
-                    
-                    println!("  Note On: key={}, freq={:.1}, amp={:.2}", key.as_int(), frequency, amplitude);
-                    active_notes.push((key.as_int(), amplitude));
+        if let TrackEventKind::Midi { message, .. } = event.kind { match message {
+            midly::MidiMessage::NoteOn { key, vel } if vel.as_int() > 0 => {
+                let frequency = note_to_frequency(i32::from(key.as_int()));
+                // Scale amplitude to full range (0.0-1.0)
+                let amplitude = f32::from(vel.as_int()) / 127.0;
+                
+                println!("  Note On: key={}, freq={:.1}, amp={:.2}", key.as_int(), frequency, amplitude);
+                active_notes.push((key.as_int(), amplitude));
 
-                    if !last_event_had_wait || !commands.is_empty() {
-                        commands.push(RumbleCommand {
-                            frequency,
-                            amplitude,
-                            wait_before: Duration::ZERO,
-                        });
-                    } else {
-                        if let Some(last_command) = commands.last_mut() {
-                            last_command.frequency = frequency;
-                            last_command.amplitude = amplitude;
-                        }
-                    }
-                    last_event_had_wait = false;
+                if !last_event_had_wait || !commands.is_empty() {
+                    commands.push(RumbleCommand {
+                        frequency,
+                        amplitude,
+                        wait_before: Duration::ZERO,
+                    });
+                } else if let Some(last_command) = commands.last_mut() {
+                    last_command.frequency = frequency;
+                    last_command.amplitude = amplitude;
                 }
-                midly::MidiMessage::NoteOff { key, vel } => {
-                    active_notes.retain(|(note, _)| *note != key.as_int());
-                    let (frequency, amplitude) = if active_notes.is_empty() {
-                        (0.0, 0.0)
-                    } else {
-                        (
-                            note_to_frequency(active_notes[0].0 as i32),
-                            active_notes[0].1,
-                        )
-                    };
+                last_event_had_wait = false;
+            }
+            midly::MidiMessage::NoteOff { key, vel: _ } => {
+                active_notes.retain(|(note, _)| *note != key.as_int());
+                let (frequency, amplitude) = if active_notes.is_empty() {
+                    (0.0, 0.0)
+                } else {
+                    (
+                        note_to_frequency(active_notes[0].0 as i32),
+                        active_notes[0].1,
+                    )
+                };
 
-                    if !last_event_had_wait {
-                        commands.push(RumbleCommand {
-                            frequency,
-                            amplitude,
-                            wait_before: Duration::ZERO,
-                        });
-                    } else {
-                        if let Some(last_command) = commands.last_mut() {
-                            last_command.frequency = frequency;
-                            last_command.amplitude = amplitude;
-                        }
-                    }
-                    last_event_had_wait = false;
+                if !last_event_had_wait {
+                    commands.push(RumbleCommand {
+                        frequency,
+                        amplitude,
+                        wait_before: Duration::ZERO,
+                    });
+                } else if let Some(last_command) = commands.last_mut() {
+                    last_command.frequency = frequency;
+                    last_command.amplitude = amplitude;
                 }
-                _ => {}
-            },
+                last_event_had_wait = false;
+            }
             _ => {}
-        }
+        } }
     }
     let final_duration = ticks_to_duration(0, current_time_ticks, tempo_changes, ticks_per_beat);
 
@@ -314,11 +329,9 @@ impl TrackMergeController {
 
         for cmd in commands {
             current_time += cmd.wait_before;
-            if current_time >= start_time && current_time <= end_time {
-                if cmd.amplitude > 0.0 {
-                    note_count += 1;
-                    max_amplitude = max_amplitude.max(cmd.amplitude);
-                }
+            if current_time >= start_time && current_time <= end_time && cmd.amplitude > 0.0 {
+                note_count += 1;
+                max_amplitude = max_amplitude.max(cmd.amplitude);
             }
             if current_time > end_time {
                 break;
@@ -347,7 +360,7 @@ impl TrackMergeController {
         let target_track = &self.tracks[target_track_idx];
 
         // Evaluate both current and target tracks
-        let (current_notes, current_max_amp) = Self::evaluate_track_section(
+        let (current_notes, _current_max_amp) = Self::evaluate_track_section(
             &current_track.commands[command_index..],
             self.current_time,
             Self::FUTURE_WINDOW_SIZE
@@ -389,7 +402,7 @@ pub fn parse_midi_to_rumble(
     track_selections: Vec<Option<usize>>,
 ) -> Result<Vec<RumbleTrack>, ParseError> {
     let smf = Smf::parse(midi_data)?;
-    let num_joycons = track_selections.len(); // This is our limit
+    let _num_joycons = track_selections.len();
 
     let ticks_per_beat = match smf.header.timing {
         midly::Timing::Metrical(timing) => timing.as_int() as f32,
@@ -463,7 +476,7 @@ pub fn parse_midi_to_rumble(
     // Normalize all amplitudes in the tracks
     for track in &mut rumble_tracks {
         for cmd in &mut track.commands {
-            cmd.amplitude = cmd.amplitude / max_velocity;
+            cmd.amplitude /= max_velocity;
         }
     }
 
@@ -506,18 +519,15 @@ pub fn parse_midi_to_rumble(
         for switch_point in &mut rumble_tracks[i].switch_points {
             let mut available_tracks: Vec<(usize, f32)> = alternative_tracks
                 .iter()
-                .filter(|(idx, _score, activity)| {
+                .filter(|(_idx, _score, activity)| {
                     // Find tracks that will be active at or soon after the switch point
                     let mut is_active = false;
-                    let current_time = Duration::ZERO;
                     let look_ahead = Duration::from_millis(500);
 
                     for (time, active) in activity.iter() {
-                        if *time >= switch_point.time && *time <= switch_point.time + look_ahead {
-                            if *active {
-                                is_active = true;
-                                break;
-                            }
+                        if *time >= switch_point.time && *time <= switch_point.time + look_ahead && *active {
+                            is_active = true;
+                            break;
                         }
                     }
                     is_active

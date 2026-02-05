@@ -1,10 +1,13 @@
+//! MIDI playback coordination across multiple JoyCons.
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use crate::joycon::JoyConManager;
-use crate::midi::rubmle::{parse_midi_to_rumble, RumbleCommand, TrackMergeController};
+
+use super::rumble::{parse_midi_to_rumble, RumbleCommand, TrackMergeController};
 
 const RANKING_WINDOW: Duration = Duration::from_millis(500);
 
