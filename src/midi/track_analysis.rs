@@ -148,7 +148,10 @@ pub fn analyze_track(track: &Track, ticks_per_beat: f32, default_tempo: u32) -> 
     }
 
     // Normalize velocities using max_velocity
-    velocities = velocities.into_iter().map(|v| v / max_velocity as f32).collect();
+    velocities = velocities
+        .into_iter()
+        .map(|v| v / max_velocity as f32)
+        .collect();
 
     // Scale velocities to full MIDI range (0-127)
     velocities = velocities.into_iter().map(|v| v / 127.0).collect();

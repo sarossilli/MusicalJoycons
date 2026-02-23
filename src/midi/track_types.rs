@@ -199,7 +199,6 @@ impl TrackMetrics {
             rhythmic_regularity: 0.05,
         };
 
-
         let density_score = {
             let ideal_density = 3.0;
             let density_diff = (self.note_density - ideal_density).abs();
@@ -257,8 +256,10 @@ impl TrackMetrics {
             TrackType::Unknown => 1.0,
         };
 
-        let bonus_multiplier = if self.note_density >= 2.0 && self.note_density <= 4.0
-            && self.unique_notes >= 5 && self.unique_notes <= 20
+        let bonus_multiplier = if self.note_density >= 2.0
+            && self.note_density <= 4.0
+            && self.unique_notes >= 5
+            && self.unique_notes <= 20
             && self.note_count >= 300
         {
             1.3
@@ -316,8 +317,8 @@ impl TrackMetrics {
         let type_multiplier = match self.track_type {
             TrackType::Melody => 1.15,  // Reduced from 1.3
             TrackType::Bass => 1.1,     // Same
-            TrackType::Harmony => 1.05,  // Reduced from 1.5
-            TrackType::Vocals => 1.1,    // Same
+            TrackType::Harmony => 1.05, // Reduced from 1.5
+            TrackType::Vocals => 1.1,   // Same
             TrackType::Drums => 0.0,
             TrackType::Unknown => 1.0,
         };
@@ -413,9 +414,7 @@ impl TrackMetrics {
             self.track_type = TrackType::Vocals;
         } else if is_likely_bass {
             self.track_type = TrackType::Bass;
-        } else if is_likely_melody {
-            self.track_type = TrackType::Melody;
-        } else if self.note_density > 3.0 && self.unique_notes > 12 {
+        } else if is_likely_melody || (self.note_density > 3.0 && self.unique_notes > 12) {
             self.track_type = TrackType::Melody;
         } else if self.sustain_ratio > 0.7 {
             self.track_type = TrackType::Harmony;

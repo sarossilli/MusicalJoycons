@@ -5,9 +5,7 @@ use std::time::Duration;
 use hidapi::HidApi;
 
 use super::device::JoyCon;
-use super::types::{
-    DeviceInfo, JoyConError, JOYCON_L_BT, JOYCON_R_BT, PRO_CONTROLLER, VENDOR_ID,
-};
+use super::types::{DeviceInfo, JoyConError, JOYCON_L_BT, JOYCON_R_BT, PRO_CONTROLLER, VENDOR_ID};
 
 const MAX_RETRIES: u32 = 5;
 const RETRY_DELAY: Duration = Duration::from_secs(5);

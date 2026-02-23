@@ -50,14 +50,14 @@ const RANKING_WINDOW: Duration = Duration::from_millis(500);
 /// or `commands.len()` if past the end.
 fn find_commands_at_time(commands: &[RumbleCommand], target_time: Duration) -> usize {
     let mut accumulated_time = Duration::ZERO;
-    
+
     for (idx, cmd) in commands.iter().enumerate() {
         if accumulated_time + cmd.wait_before > target_time {
             return idx;
         }
         accumulated_time += cmd.wait_before;
     }
-    
+
     commands.len()
 }
 
@@ -194,7 +194,8 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                 .iter()
                 .enumerate()
                 .filter(|(idx, track)| {
-                    ranking_active.lock().unwrap_or_else(|e| e.into_inner())[*idx] && !track.metrics.is_percussion
+                    ranking_active.lock().unwrap_or_else(|e| e.into_inner())[*idx]
+                        && !track.metrics.is_percussion
                 })
                 .map(|(idx, track)| {
                     let (note_count, max_amp) = TrackMergeController::evaluate_track_section(
@@ -215,7 +216,10 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                 .collect();
 
             // Sort by note count first, then by score
-            track_scores.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)));
+            track_scores.sort_by(|a, b| {
+                b.2.cmp(&a.2)
+                    .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+            });
 
             // Take the top N tracks for N JoyCons
             let mut new_assignments = vec![];
@@ -224,8 +228,9 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
             }
 
             // Update assignments if changed and there are active notes
-            let mut assignments: std::sync::MutexGuard<'_, Vec<usize>> =
-                ranking_assignments.lock().unwrap_or_else(|e| e.into_inner());
+            let mut assignments: std::sync::MutexGuard<'_, Vec<usize>> = ranking_assignments
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if *assignments != new_assignments {
                 let should_switch = track_scores
                     .iter()
@@ -256,7 +261,12 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
             current_time += RANKING_WINDOW / 2;
 
             // Check if all tracks are complete
-            if ranking_active.lock().unwrap_or_else(|e| e.into_inner()).iter().all(|&active| !active) {
+            if ranking_active
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .all(|&active| !active)
+            {
                 break;
             }
         }
@@ -295,7 +305,8 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                         joycon_idx + 1,
                         current_track_idx
                     );
-                    joycon_active.lock().unwrap_or_else(|e| e.into_inner())[current_track_idx] = false;
+                    joycon_active.lock().unwrap_or_else(|e| e.into_inner())[current_track_idx] =
+                        false;
                     break;
                 }
 
@@ -305,12 +316,15 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                 drop(assignments);
 
                 if assigned_track_idx != current_track_idx {
-                    let should_switch = merge_controller.lock().unwrap_or_else(|e| e.into_inner()).should_switch_tracks(
-                        joycon_idx,
-                        current_track_idx,
-                        assigned_track_idx,
-                        command_index,
-                    );
+                    let should_switch = merge_controller
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .should_switch_tracks(
+                            joycon_idx,
+                            current_track_idx,
+                            assigned_track_idx,
+                            command_index,
+                        );
 
                     if should_switch {
                         pending_track_switch = Some(assigned_track_idx);
@@ -347,7 +361,10 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                         );
                         command_index = new_index;
                         pending_track_switch = None;
-                        merge_controller.lock().unwrap_or_else(|e| e.into_inner()).record_switch(joycon_idx);
+                        merge_controller
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .record_switch(joycon_idx);
                         continue; // Restart loop with new track
                     }
                 }
@@ -424,10 +441,22 @@ mod tests {
         ];
 
         assert_eq!(find_commands_at_time(&commands, Duration::ZERO), 0);
-        assert_eq!(find_commands_at_time(&commands, Duration::from_millis(50)), 0);
-        assert_eq!(find_commands_at_time(&commands, Duration::from_millis(100)), 1);
-        assert_eq!(find_commands_at_time(&commands, Duration::from_millis(300)), 2);
-        assert_eq!(find_commands_at_time(&commands, Duration::from_millis(600)), 3);
+        assert_eq!(
+            find_commands_at_time(&commands, Duration::from_millis(50)),
+            0
+        );
+        assert_eq!(
+            find_commands_at_time(&commands, Duration::from_millis(100)),
+            1
+        );
+        assert_eq!(
+            find_commands_at_time(&commands, Duration::from_millis(300)),
+            2
+        );
+        assert_eq!(
+            find_commands_at_time(&commands, Duration::from_millis(600)),
+            3
+        );
     }
 
     #[test]

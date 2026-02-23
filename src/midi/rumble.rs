@@ -263,15 +263,18 @@ fn convert_track_with_tempo(
     tempo_changes: &[TempoChange],
     ticks_per_beat: f32,
     track_index: usize,
-    metrics: TrackMetrics,  // Add metrics parameter
+    metrics: TrackMetrics, // Add metrics parameter
 ) -> Result<RumbleTrack, ParseError> {
     let mut commands = Vec::new();
     let mut current_time_ticks = 0u32;
     let mut active_notes: Vec<(u8, f32)> = Vec::new();
     let mut last_event_had_wait = false;
 
-    println!("Converting track {}: {} notes", track_index, metrics.note_count);
-    
+    println!(
+        "Converting track {}: {} notes",
+        track_index, metrics.note_count
+    );
+
     for event in track.iter() {
         let delta_ticks = event.delta.as_int();
         if delta_ticks > 0 {
@@ -303,52 +306,59 @@ fn convert_track_with_tempo(
 
         current_time_ticks += delta_ticks;
 
-        if let TrackEventKind::Midi { message, .. } = event.kind { match message {
-            midly::MidiMessage::NoteOn { key, vel } if vel.as_int() > 0 => {
-                let frequency = note_to_frequency(i32::from(key.as_int()));
-                // Scale amplitude to full range (0.0-1.0)
-                let amplitude = f32::from(vel.as_int()) / 127.0;
-                
-                println!("  Note On: key={}, freq={:.1}, amp={:.2}", key.as_int(), frequency, amplitude);
-                active_notes.push((key.as_int(), amplitude));
+        if let TrackEventKind::Midi { message, .. } = event.kind {
+            match message {
+                midly::MidiMessage::NoteOn { key, vel } if vel.as_int() > 0 => {
+                    let frequency = note_to_frequency(i32::from(key.as_int()));
+                    // Scale amplitude to full range (0.0-1.0)
+                    let amplitude = f32::from(vel.as_int()) / 127.0;
 
-                if !last_event_had_wait || !commands.is_empty() {
-                    commands.push(RumbleCommand {
+                    println!(
+                        "  Note On: key={}, freq={:.1}, amp={:.2}",
+                        key.as_int(),
                         frequency,
-                        amplitude,
-                        wait_before: Duration::ZERO,
-                    });
-                } else if let Some(last_command) = commands.last_mut() {
-                    last_command.frequency = frequency;
-                    last_command.amplitude = amplitude;
-                }
-                last_event_had_wait = false;
-            }
-            midly::MidiMessage::NoteOff { key, vel: _ } => {
-                active_notes.retain(|(note, _)| *note != key.as_int());
-                let (frequency, amplitude) = if active_notes.is_empty() {
-                    (0.0, 0.0)
-                } else {
-                    (
-                        note_to_frequency(active_notes[0].0 as i32),
-                        active_notes[0].1,
-                    )
-                };
+                        amplitude
+                    );
+                    active_notes.push((key.as_int(), amplitude));
 
-                if !last_event_had_wait {
-                    commands.push(RumbleCommand {
-                        frequency,
-                        amplitude,
-                        wait_before: Duration::ZERO,
-                    });
-                } else if let Some(last_command) = commands.last_mut() {
-                    last_command.frequency = frequency;
-                    last_command.amplitude = amplitude;
+                    if !last_event_had_wait || !commands.is_empty() {
+                        commands.push(RumbleCommand {
+                            frequency,
+                            amplitude,
+                            wait_before: Duration::ZERO,
+                        });
+                    } else if let Some(last_command) = commands.last_mut() {
+                        last_command.frequency = frequency;
+                        last_command.amplitude = amplitude;
+                    }
+                    last_event_had_wait = false;
                 }
-                last_event_had_wait = false;
+                midly::MidiMessage::NoteOff { key, vel: _ } => {
+                    active_notes.retain(|(note, _)| *note != key.as_int());
+                    let (frequency, amplitude) = if active_notes.is_empty() {
+                        (0.0, 0.0)
+                    } else {
+                        (
+                            note_to_frequency(active_notes[0].0 as i32),
+                            active_notes[0].1,
+                        )
+                    };
+
+                    if !last_event_had_wait {
+                        commands.push(RumbleCommand {
+                            frequency,
+                            amplitude,
+                            wait_before: Duration::ZERO,
+                        });
+                    } else if let Some(last_command) = commands.last_mut() {
+                        last_command.frequency = frequency;
+                        last_command.amplitude = amplitude;
+                    }
+                    last_event_had_wait = false;
+                }
+                _ => {}
             }
-            _ => {}
-        } }
+        }
     }
     let final_duration = ticks_to_duration(0, current_time_ticks, tempo_changes, ticks_per_beat);
 
@@ -367,18 +377,22 @@ fn convert_track_with_tempo(
         .into_iter()
         .map(|(time, _)| TrackSwitchPoint {
             time,
-            alternative_track_index: track_index,  // Will be updated later
+            alternative_track_index: track_index, // Will be updated later
         })
         .collect();
 
-    println!("Track {} converted: {} commands", track_index, commands.len());
-    
+    println!(
+        "Track {} converted: {} commands",
+        track_index,
+        commands.len()
+    );
+
     Ok(RumbleTrack {
         commands,
         total_duration: final_duration,
         switch_points,
         track_index,
-        metrics,  // Include metrics in struct initialization
+        metrics, // Include metrics in struct initialization
     })
 }
 
@@ -469,7 +483,7 @@ impl TrackMergeController {
     pub fn evaluate_track_section(
         commands: &[RumbleCommand],
         start_time: Duration,
-        window_size: Duration
+        window_size: Duration,
     ) -> (usize, f32) {
         let mut note_count = 0;
         let mut max_amplitude: f32 = 0.0;
@@ -526,7 +540,11 @@ impl TrackMergeController {
         const MIN_SCORE_DIFF_FOR_SWITCH: f32 = 1.5;
 
         // Check if enough time has passed since last switch
-        if self.current_time.saturating_sub(self.last_switch_times[joycon_idx]) < MIN_SWITCH_INTERVAL {
+        if self
+            .current_time
+            .saturating_sub(self.last_switch_times[joycon_idx])
+            < MIN_SWITCH_INTERVAL
+        {
             return false;
         }
 
@@ -537,21 +555,20 @@ impl TrackMergeController {
         let (current_notes, _current_max_amp) = Self::evaluate_track_section(
             &current_track.commands[command_index..],
             self.current_time,
-            Self::FUTURE_WINDOW_SIZE
+            Self::FUTURE_WINDOW_SIZE,
         );
-        
+
         let target_start_idx = find_commands_at_time(&target_track.commands, self.current_time);
         let (target_notes, target_max_amp) = Self::evaluate_track_section(
             &target_track.commands[target_start_idx..],
             self.current_time,
-            Self::FUTURE_WINDOW_SIZE
+            Self::FUTURE_WINDOW_SIZE,
         );
 
         // Compare track scores and activity
-        let activity_check = 
-            (target_notes > current_notes + 1 || 
-            (current_notes == 0 && target_notes >= MIN_NOTE_COUNT_FOR_SWITCH)) &&
-            target_max_amp >= 0.3;
+        let activity_check = (target_notes > current_notes + 1
+            || (current_notes == 0 && target_notes >= MIN_NOTE_COUNT_FOR_SWITCH))
+            && target_max_amp >= 0.3;
 
         if activity_check {
             let current_score = current_track.metrics.calculate_score();
@@ -659,26 +676,27 @@ pub fn parse_midi_to_rumble(
 
     println!("\n🎵 Found {} tracks in MIDI file", track_metrics.len());
 
-    let selected_tracks: Vec<&TrackMetrics> = if track_selections.is_empty() || track_selections.iter().all(Option::is_none) {
-        // Sort all tracks by score
-        track_metrics.sort_by(|a, b| {
-            b.calculate_score()
-                .partial_cmp(&a.calculate_score())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+    let selected_tracks: Vec<&TrackMetrics> =
+        if track_selections.is_empty() || track_selections.iter().all(Option::is_none) {
+            // Sort all tracks by score
+            track_metrics.sort_by(|a, b| {
+                b.calculate_score()
+                    .partial_cmp(&a.calculate_score())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
 
-        // Take all valid tracks (not just num_joycons)
-        track_metrics
-            .iter()
-            .filter(|m| !m.is_percussion && m.note_count > 0)
-            .collect()
-    } else {
-        // Handle manual selection
-        track_selections
-            .iter()
-            .filter_map(|&selection| selection.and_then(|idx| track_metrics.get(idx)))
-            .collect()
-    };
+            // Take all valid tracks (not just num_joycons)
+            track_metrics
+                .iter()
+                .filter(|m| !m.is_percussion && m.note_count > 0)
+                .collect()
+        } else {
+            // Handle manual selection
+            track_selections
+                .iter()
+                .filter_map(|&selection| selection.and_then(|idx| track_metrics.get(idx)))
+                .collect()
+        };
 
     if selected_tracks.is_empty() {
         return Err(ParseError::NoTracks);
@@ -692,7 +710,7 @@ pub fn parse_midi_to_rumble(
                 &tempo_changes,
                 ticks_per_beat,
                 metrics.track_index,
-                (*metrics).clone(),  // Dereference and clone the metrics
+                (*metrics).clone(), // Dereference and clone the metrics
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -701,10 +719,12 @@ pub fn parse_midi_to_rumble(
     let mut max_velocity = 1.0f32;
     for track in smf.tracks.iter() {
         for event in track.iter() {
-            if let TrackEventKind::Midi { message, .. } = event.kind {
-                if let midly::MidiMessage::NoteOn { vel, .. } = message {
-                    max_velocity = max_velocity.max(vel.as_int() as f32 / 127.0);
-                }
+            if let TrackEventKind::Midi {
+                message: midly::MidiMessage::NoteOn { vel, .. },
+                ..
+            } = event.kind
+            {
+                max_velocity = max_velocity.max(vel.as_int() as f32 / 127.0);
             }
         }
     }
@@ -719,34 +739,38 @@ pub fn parse_midi_to_rumble(
     // Update switch points with multiple alternative tracks
     for i in 0..rumble_tracks.len() {
         let current_track_idx = rumble_tracks[i].track_index;
-        println!("🔍 Finding alternative tracks for track {}", current_track_idx + 1);
-        
+        println!(
+            "🔍 Finding alternative tracks for track {}",
+            current_track_idx + 1
+        );
+
         // First, collect all potential alternative tracks and their activity periods
-        let alternative_tracks: Vec<(usize, f32, Vec<(Duration, bool)>)> = track_metrics
+        type AlternativeTrack = (usize, f32, Vec<(Duration, bool)>);
+        let alternative_tracks: Vec<AlternativeTrack> = track_metrics
             .iter()
             .enumerate()
             .filter(|(idx, m)| {
-                !m.is_percussion 
-                && m.note_count > 0 
-                && *idx != current_track_idx  // Don't include current track
+                !m.is_percussion && m.note_count > 0 && *idx != current_track_idx
+                // Don't include current track
             })
             .map(|(idx, m)| {
                 let score = m.calculate_score();
                 println!("  - Track {} score: {:.2}", idx + 1, score);
-                
+
                 // For each track, create an activity map
-                let activity = if let Some(track) = rumble_tracks.iter().find(|t| t.track_index == idx) {
-                    let mut activity_periods = Vec::new();
-                    let mut current_time = Duration::ZERO;
-                    for cmd in &track.commands {
-                        current_time += cmd.wait_before;
-                        activity_periods.push((current_time, cmd.amplitude > 0.0));
-                    }
-                    activity_periods
-                } else {
-                    Vec::new()
-                };
-                
+                let activity =
+                    if let Some(track) = rumble_tracks.iter().find(|t| t.track_index == idx) {
+                        let mut activity_periods = Vec::new();
+                        let mut current_time = Duration::ZERO;
+                        for cmd in &track.commands {
+                            current_time += cmd.wait_before;
+                            activity_periods.push((current_time, cmd.amplitude > 0.0));
+                        }
+                        activity_periods
+                    } else {
+                        Vec::new()
+                    };
+
                 (idx, score, activity)
             })
             .collect();
@@ -761,7 +785,10 @@ pub fn parse_midi_to_rumble(
                     let look_ahead = Duration::from_millis(500);
 
                     for (time, active) in activity.iter() {
-                        if *time >= switch_point.time && *time <= switch_point.time + look_ahead && *active {
+                        if *time >= switch_point.time
+                            && *time <= switch_point.time + look_ahead
+                            && *active
+                        {
                             is_active = true;
                             break;
                         }
@@ -772,10 +799,12 @@ pub fn parse_midi_to_rumble(
                 .collect();
 
             // Sort available tracks by score
-            available_tracks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            available_tracks
+                .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
             if let Some((best_idx, score)) = available_tracks.first() {
-                println!("  ✨ At {:?}: Best alternative for track {} is track {} (score: {:.2})", 
+                println!(
+                    "  ✨ At {:?}: Best alternative for track {} is track {} (score: {:.2})",
                     switch_point.time,
                     current_track_idx + 1,
                     best_idx + 1,
@@ -783,7 +812,8 @@ pub fn parse_midi_to_rumble(
                 );
                 switch_point.alternative_track_index = *best_idx;
             } else {
-                println!("  ⚠️ No active alternatives found for track {} at {:?}", 
+                println!(
+                    "  ⚠️ No active alternatives found for track {} at {:?}",
                     current_track_idx + 1,
                     switch_point.time
                 );
