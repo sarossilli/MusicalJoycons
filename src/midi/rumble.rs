@@ -352,14 +352,14 @@ fn convert_track_with_tempo(
     }
     let final_duration = ticks_to_duration(0, current_time_ticks, tempo_changes, ticks_per_beat);
 
-    if !commands.is_empty()
-        && (commands.last().unwrap().frequency != 0.0 || commands.last().unwrap().amplitude != 0.0)
-    {
-        commands.push(RumbleCommand {
-            frequency: 0.0,
-            amplitude: 0.0,
-            wait_before: Duration::ZERO,
-        });
+    if let Some(last) = commands.last() {
+        if last.frequency != 0.0 || last.amplitude != 0.0 {
+            commands.push(RumbleCommand {
+                frequency: 0.0,
+                amplitude: 0.0,
+                wait_before: Duration::ZERO,
+            });
+        }
     }
 
     let silent_periods = find_silent_periods(&commands);
@@ -664,7 +664,7 @@ pub fn parse_midi_to_rumble(
         track_metrics.sort_by(|a, b| {
             b.calculate_score()
                 .partial_cmp(&a.calculate_score())
-                .unwrap()
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // Take all valid tracks (not just num_joycons)
@@ -772,7 +772,7 @@ pub fn parse_midi_to_rumble(
                 .collect();
 
             // Sort available tracks by score
-            available_tracks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            available_tracks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
             if let Some((best_idx, score)) = available_tracks.first() {
                 println!("  ✨ At {:?}: Best alternative for track {} is track {} (score: {:.2})", 
