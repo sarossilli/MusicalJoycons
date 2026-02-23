@@ -153,7 +153,7 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
         return Err("No playable tracks found in MIDI file".into());
     }
 
-    track_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    track_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     let initial_assignments: Vec<usize> = track_scores
         .iter()
@@ -182,7 +182,7 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
     let ranking_tracks = tracks.clone();
 
     thread::spawn(move || {
-        while !*ranking_signal.lock().unwrap() {
+        while !*ranking_signal.lock().unwrap_or_else(|e| e.into_inner()) {
             thread::sleep(Duration::from_millis(1));
         }
 
@@ -194,7 +194,7 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                 .iter()
                 .enumerate()
                 .filter(|(idx, track)| {
-                    ranking_active.lock().unwrap()[*idx] && !track.metrics.is_percussion
+                    ranking_active.lock().unwrap_or_else(|e| e.into_inner())[*idx] && !track.metrics.is_percussion
                 })
                 .map(|(idx, track)| {
                     let (note_count, max_amp) = TrackMergeController::evaluate_track_section(
@@ -215,7 +215,7 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                 .collect();
 
             // Sort by note count first, then by score
-            track_scores.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| b.1.partial_cmp(&a.1).unwrap()));
+            track_scores.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)));
 
             // Take the top N tracks for N JoyCons
             let mut new_assignments = vec![];
@@ -225,7 +225,7 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
 
             // Update assignments if changed and there are active notes
             let mut assignments: std::sync::MutexGuard<'_, Vec<usize>> =
-                ranking_assignments.lock().unwrap();
+                ranking_assignments.lock().unwrap_or_else(|e| e.into_inner());
             if *assignments != new_assignments {
                 let should_switch = track_scores
                     .iter()
@@ -256,7 +256,7 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
             current_time += RANKING_WINDOW / 2;
 
             // Check if all tracks are complete
-            if ranking_active.lock().unwrap().iter().all(|&active| !active) {
+            if ranking_active.lock().unwrap_or_else(|e| e.into_inner()).iter().all(|&active| !active) {
                 break;
             }
         }
@@ -277,7 +277,7 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
         let merge_controller = Arc::clone(&merge_controller);
 
         handles.push(thread::spawn(move || {
-            while !*joycon_signal.lock().unwrap() {
+            while !*joycon_signal.lock().unwrap_or_else(|e| e.into_inner()) {
                 thread::sleep(Duration::from_millis(1));
             }
 
@@ -295,17 +295,17 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                         joycon_idx + 1,
                         current_track_idx
                     );
-                    joycon_active.lock().unwrap()[current_track_idx] = false;
+                    joycon_active.lock().unwrap_or_else(|e| e.into_inner())[current_track_idx] = false;
                     break;
                 }
 
                 // Check for track reassignment
-                let assignments = joycon_assignments.lock().unwrap();
+                let assignments = joycon_assignments.lock().unwrap_or_else(|e| e.into_inner());
                 let assigned_track_idx = assignments[joycon_idx];
                 drop(assignments);
 
                 if assigned_track_idx != current_track_idx {
-                    let should_switch = merge_controller.lock().unwrap().should_switch_tracks(
+                    let should_switch = merge_controller.lock().unwrap_or_else(|e| e.into_inner()).should_switch_tracks(
                         joycon_idx,
                         current_track_idx,
                         assigned_track_idx,
@@ -347,7 +347,7 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                         );
                         command_index = new_index;
                         pending_track_switch = None;
-                        merge_controller.lock().unwrap().record_switch(joycon_idx);
+                        merge_controller.lock().unwrap_or_else(|e| e.into_inner()).record_switch(joycon_idx);
                         continue; // Restart loop with new track
                     }
                 }
@@ -367,7 +367,7 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                     thread::sleep(cmd.wait_before);
                     merge_controller
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|e| e.into_inner())
                         .update_time(cmd.wait_before);
                     current_time += cmd.wait_before;
                 }
@@ -385,11 +385,14 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
 
     // Start playback
     println!("\n▶️ Starting playback...");
-    *start_signal.lock().unwrap() = true;
+    *start_signal.lock().unwrap_or_else(|e| e.into_inner()) = true;
 
     // Wait for all tracks to complete
     for handle in handles {
-        handle.join().unwrap()?;
+        match handle.join() {
+            Ok(result) => result?,
+            Err(_) => return Err("A playback thread panicked".into()),
+        }
     }
 
     println!("✨ Playback complete!");

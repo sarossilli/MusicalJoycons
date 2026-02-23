@@ -290,7 +290,7 @@ impl JoyCon {
     ///
     /// // Spawn threads for each JoyCon (simplified example)
     /// // ... then trigger synchronized start:
-    /// *signal.lock().unwrap() = true;
+    /// *signal.lock().unwrap_or_else(|e| e.into_inner()) = true;
     /// # Ok(())
     /// # }
     /// ```
@@ -303,7 +303,7 @@ impl JoyCon {
         track: RumbleTrack,
         start_signal: Arc<Mutex<bool>>,
     ) -> Result<(), JoyConError> {
-        while !*start_signal.lock().unwrap() {
+        while !*start_signal.lock().unwrap_or_else(|e| e.into_inner()) {
             thread::sleep(Duration::from_millis(1));
         }
 
