@@ -11,99 +11,174 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RELEASE_NAME: musical-joycons
+  BINARY_NAME: musical_joycons
 
 jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get tag version
+        id: tag
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Get Cargo.toml version
+        id: cargo
+        run: |
+          version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify versions match
+        run: |
+          if [ "${{ steps.tag.outputs.version }}" != "${{ steps.cargo.outputs.version }}" ]; then
+            echo "::error::Tag version (${{ steps.tag.outputs.version }}) does not match Cargo.toml version (${{ steps.cargo.outputs.version }})"
+            exit 1
+          fi
+          echo "Versions match: ${{ steps.tag.outputs.version }}"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: validate
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            target: linux
-            artifact_name: musicalJoycons
-            asset_name: MusicalJoycons-linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            asset_name: musical-joycons-linux-x86_64
+            archive_ext: tar.gz
           - os: windows-latest
-            target: windows
-            artifact_name: musicalJoycons.exe
-            asset_name: MusicalJoycons-windows-x86_64
+            target: x86_64-pc-windows-msvc
+            asset_name: musical-joycons-windows-x86_64
+            archive_ext: zip
           - os: macos-latest
-            target: macos
-            artifact_name: musicalJoycons
-            asset_name: MusicalJoycons-macos-x86_64
+            target: aarch64-apple-darwin
+            asset_name: musical-joycons-macos-aarch64
+            archive_ext: tar.gz
+          - os: macos-13
+            target: x86_64-apple-darwin
+            asset_name: musical-joycons-macos-x86_64
+            archive_ext: tar.gz
 
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install system dependencies (Linux)
-      if: matrix.os == 'ubuntu-latest'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          libudev-dev \
-          libusb-1.0-0-dev \
-          pkg-config \
-          libdbus-1-dev \
-          libbluetooth-dev
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
-      
-    - name: Build
-      run: cargo build --release
-      
-    - name: Run tests
-      run: cargo test --release
-      
-    - name: Prepare release archive
-      shell: bash
-      run: |
-        mkdir -p "release/${{ env.RELEASE_NAME }}"
-        
-        # Copy executable
-        if [ "${{ matrix.os }}" = "windows-latest" ]; then
-          cp "target/release/${{ matrix.artifact_name }}" "release/${{ env.RELEASE_NAME }}/"
-          cd release
-          7z a "${{ matrix.asset_name }}.zip" "${{ env.RELEASE_NAME }}"
-        else
-          cp "target/release/${{ matrix.artifact_name }}" "release/${{ env.RELEASE_NAME }}/"
-          chmod +x "release/${{ env.RELEASE_NAME }}/${{ matrix.artifact_name }}"
-          cd release
-          tar -czf "${{ matrix.asset_name }}.tar.gz" "${{ env.RELEASE_NAME }}"
-        fi
-        
-    - name: Upload release archive
-      uses: actions/upload-artifact@v3
-      with:
-        name: ${{ matrix.asset_name }}
-        path: release/${{ matrix.asset_name }}.${{ matrix.os == 'windows-latest' && 'zip' || 'tar.gz' }}
-        
-  create_release:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libudev-dev \
+            libusb-1.0-0-dev \
+            pkg-config \
+            libdbus-1-dev \
+            libbluetooth-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Run tests
+        run: cargo test --release --target ${{ matrix.target }}
+
+      - name: Determine binary path
+        id: bin
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            echo "path=target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}.exe" >> "$GITHUB_OUTPUT"
+            echo "name=${{ env.BINARY_NAME }}.exe" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}" >> "$GITHUB_OUTPUT"
+            echo "name=${{ env.BINARY_NAME }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare release archive
+        shell: bash
+        run: |
+          staging="${{ env.RELEASE_NAME }}"
+          mkdir -p "$staging"
+
+          cp "${{ steps.bin.outputs.path }}" "$staging/"
+          [ -f README.md ] && cp README.md "$staging/"
+          [ -f CHANGELOG.md ] && cp CHANGELOG.md "$staging/"
+
+          if [ "${{ matrix.archive_ext }}" = "zip" ]; then
+            7z a "${{ matrix.asset_name }}.zip" "$staging"
+          else
+            chmod +x "$staging/${{ steps.bin.outputs.name }}"
+            tar -czf "${{ matrix.asset_name }}.tar.gz" "$staging"
+          fi
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}.${{ matrix.archive_ext }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Get version from tag
-        id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-        
-      - name: Download artifacts
-        uses: actions/download-artifact@v3
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          version_number="${version#v}"
+          changelog=$(awk "/^## \[${version_number}\]/{found=1; next} /^## \[/{if(found) exit} found{print}" CHANGELOG.md)
+          if [ -z "$changelog" ]; then
+            changelog="No changelog entry found for ${version}."
+          fi
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "$changelog"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
           path: release
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: release
+        run: |
+          sha256sum *.tar.gz *.zip > checksums-sha256.txt
+          echo "## SHA256 Checksums"
+          cat checksums-sha256.txt
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-          files: |
-            release/MusicalJoycons-linux-x86_64/MusicalJoycons-linux-x86_64.tar.gz
-            release/MusicalJoycons-windows-x86_64/MusicalJoycons-windows-x86_64.zip
-            release/MusicalJoycons-macos-x86_64/MusicalJoycons-macos-x86_64.tar.gz
-          name: "Musical Joycons ${{ env.VERSION }}"
+          name: "Musical Joycons ${{ steps.version.outputs.version }}"
+          body: ${{ steps.changelog.outputs.body }}
           draft: false
           prerelease: false
-          generate_release_notes: true
+          files: |
+            release/*.tar.gz
+            release/*.zip
+            release/checksums-sha256.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
