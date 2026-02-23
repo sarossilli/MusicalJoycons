@@ -50,14 +50,14 @@ const RANKING_WINDOW: Duration = Duration::from_millis(500);
 /// or `commands.len()` if past the end.
 fn find_commands_at_time(commands: &[RumbleCommand], target_time: Duration) -> usize {
     let mut accumulated_time = Duration::ZERO;
-    
+
     for (idx, cmd) in commands.iter().enumerate() {
         if accumulated_time + cmd.wait_before > target_time {
             return idx;
         }
         accumulated_time += cmd.wait_before;
     }
-    
+
     commands.len()
 }
 
@@ -421,10 +421,22 @@ mod tests {
         ];
 
         assert_eq!(find_commands_at_time(&commands, Duration::ZERO), 0);
-        assert_eq!(find_commands_at_time(&commands, Duration::from_millis(50)), 0);
-        assert_eq!(find_commands_at_time(&commands, Duration::from_millis(100)), 1);
-        assert_eq!(find_commands_at_time(&commands, Duration::from_millis(300)), 2);
-        assert_eq!(find_commands_at_time(&commands, Duration::from_millis(600)), 3);
+        assert_eq!(
+            find_commands_at_time(&commands, Duration::from_millis(50)),
+            0
+        );
+        assert_eq!(
+            find_commands_at_time(&commands, Duration::from_millis(100)),
+            1
+        );
+        assert_eq!(
+            find_commands_at_time(&commands, Duration::from_millis(300)),
+            2
+        );
+        assert_eq!(
+            find_commands_at_time(&commands, Duration::from_millis(600)),
+            3
+        );
     }
 
     #[test]
