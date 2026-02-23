@@ -414,9 +414,7 @@ impl TrackMetrics {
             self.track_type = TrackType::Vocals;
         } else if is_likely_bass {
             self.track_type = TrackType::Bass;
-        } else if is_likely_melody {
-            self.track_type = TrackType::Melody;
-        } else if self.note_density > 3.0 && self.unique_notes > 12 {
+        } else if is_likely_melody || (self.note_density > 3.0 && self.unique_notes > 12) {
             self.track_type = TrackType::Melody;
         } else if self.sustain_ratio > 0.7 {
             self.track_type = TrackType::Harmony;

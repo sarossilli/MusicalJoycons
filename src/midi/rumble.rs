@@ -719,10 +719,12 @@ pub fn parse_midi_to_rumble(
     let mut max_velocity = 1.0f32;
     for track in smf.tracks.iter() {
         for event in track.iter() {
-            if let TrackEventKind::Midi { message, .. } = event.kind {
-                if let midly::MidiMessage::NoteOn { vel, .. } = message {
-                    max_velocity = max_velocity.max(vel.as_int() as f32 / 127.0);
-                }
+            if let TrackEventKind::Midi {
+                message: midly::MidiMessage::NoteOn { vel, .. },
+                ..
+            } = event.kind
+            {
+                max_velocity = max_velocity.max(vel.as_int() as f32 / 127.0);
             }
         }
     }
@@ -743,7 +745,8 @@ pub fn parse_midi_to_rumble(
         );
 
         // First, collect all potential alternative tracks and their activity periods
-        let alternative_tracks: Vec<(usize, f32, Vec<(Duration, bool)>)> = track_metrics
+        type AlternativeTrack = (usize, f32, Vec<(Duration, bool)>);
+        let alternative_tracks: Vec<AlternativeTrack> = track_metrics
             .iter()
             .enumerate()
             .filter(|(idx, m)| {
