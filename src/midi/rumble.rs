@@ -1,36 +1,153 @@
-use crate::midi::{track_analysis::analyze_track, track_types::TrackMetrics};
-use midly::{Smf, Track, TrackEventKind};
+//! MIDI to rumble command conversion.
+//!
+//! This module handles converting MIDI data into sequences of rumble commands
+//! that can be played on JoyCon devices. It includes the core data structures
+//! for rumble playback and the parsing logic for MIDI files.
+//!
+//! # Key Types
+//!
+//! - [`RumbleCommand`]: A single frequency/amplitude/timing instruction
+//! - [`RumbleTrack`]: A complete sequence of commands for one track
+//! - [`TrackMergeController`]: Coordinates multi-track playback
+//!
+//! # Conversion Process
+//!
+//! 1. Parse MIDI file using the `midly` crate
+//! 2. Extract tempo changes for accurate timing
+//! 3. Convert each track's note events to rumble commands
+//! 4. Identify silent periods for potential track switching
+//! 5. Normalize amplitudes across all tracks
+
 use std::time::Duration;
+
+use midly::{Smf, Track, TrackEventKind};
 use thiserror::Error;
 
+use super::track_analysis::analyze_track;
+use super::track_types::TrackMetrics;
+
+/// A single rumble command to send to a JoyCon.
+///
+/// Each command specifies a frequency, amplitude, and the time to wait
+/// before executing. Commands with `frequency = 0.0` and `amplitude = 0.0`
+/// represent silence (stopping the rumble motor).
+///
+/// # Example
+///
+/// ```
+/// use std::time::Duration;
+/// use musical_joycons::midi::RumbleCommand;
+///
+/// let command = RumbleCommand {
+///     frequency: 440.0,           // A4 note
+///     amplitude: 0.8,             // 80% volume
+///     wait_before: Duration::from_millis(100),  // Wait 100ms first
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct RumbleCommand {
+    /// Frequency in Hz. Use `0.0` for silence.
+    ///
+    /// Common musical frequencies:
+    /// - C4 (Middle C): 261.63 Hz
+    /// - A4 (Concert Pitch): 440.0 Hz
+    /// - C5: 523.25 Hz
     pub frequency: f32,
+
+    /// Amplitude from `0.0` (silent) to `1.0` (maximum).
+    ///
+    /// Values are typically normalized from MIDI velocity (0-127).
     pub amplitude: f32,
+
+    /// Time to wait before executing this command.
+    ///
+    /// This creates the timing between notes. A value of `Duration::ZERO`
+    /// means the command executes immediately after the previous one.
     pub wait_before: Duration,
 }
 
+/// A point in time where track switching may occur.
+///
+/// During playback, JoyCons can switch from one track to another during
+/// silent periods. This struct identifies when such switches are possible
+/// and which track to switch to.
 #[derive(Debug, Clone)]
 pub struct TrackSwitchPoint {
+    /// Time offset from the start of the track where switching is possible.
     pub time: Duration,
+
+    /// Index of the recommended alternative track to switch to.
+    ///
+    /// This is determined based on which tracks are most active at this time.
     pub alternative_track_index: usize,
 }
 
+/// A sequence of rumble commands representing a single MIDI track.
+///
+/// This is the primary data structure for MIDI playback. It contains all
+/// the rumble commands needed to play a track, along with metadata about
+/// the track's characteristics and potential switch points.
+///
+/// # Creating a RumbleTrack
+///
+/// Tracks are created by `parse_midi_to_rumble()`, which converts raw
+/// MIDI data into playable rumble tracks:
+///
+/// ```no_run
+/// use musical_joycons::midi::RumbleTrack;
+///
+/// // Tracks are typically created via parse_midi_to_rumble
+/// // let tracks = parse_midi_to_rumble(&midi_data, vec![])?;
+/// ```
 #[derive(Debug, Clone)]
 pub struct RumbleTrack {
+    /// The sequence of rumble commands to execute.
+    ///
+    /// Commands are in chronological order. Execute them in sequence,
+    /// respecting each command's `wait_before` duration.
     pub commands: Vec<RumbleCommand>,
+
+    /// Total duration of the track from first to last note.
     pub total_duration: Duration,
-    pub switch_points: Vec<TrackSwitchPoint>,  // New field
-    pub track_index: usize,                    // New field
-    pub metrics: TrackMetrics,  // Add this field
+
+    /// Points where track switching is possible (during silent periods).
+    ///
+    /// These are identified automatically by looking for gaps in note activity.
+    pub switch_points: Vec<TrackSwitchPoint>,
+
+    /// The original index of this track in the MIDI file.
+    ///
+    /// Useful for debugging and for correlating with track names.
+    pub track_index: usize,
+
+    /// Analysis metrics for this track (note count, density, etc.).
+    ///
+    /// Used for scoring and track type identification.
+    pub metrics: TrackMetrics,
 }
 
+/// Errors that can occur during MIDI parsing and conversion.
+///
+/// This error type covers all failure modes from file I/O to MIDI format issues.
 #[derive(Debug, Error)]
 pub enum ParseError {
+    /// Failed to read the MIDI file from disk.
+    ///
+    /// The inner error contains the I/O error details.
     #[error("Failed to read MIDI file: {0}")]
     FileError(#[from] std::io::Error),
+
+    /// Failed to parse the MIDI file format.
+    ///
+    /// This can occur if the file is corrupted, not a valid MIDI file,
+    /// or uses unsupported MIDI features.
     #[error("Failed to parse MIDI file: {0}")]
     MidiError(#[from] midly::Error),
+
+    /// The MIDI file contains no playable tracks.
+    ///
+    /// This happens when all tracks are either empty, contain only
+    /// percussion, or have no note events.
     #[error("No tracks found")]
     NoTracks,
 }
@@ -60,7 +177,7 @@ fn collect_tempo_changes(smf: &Smf) -> Vec<TempoChange> {
     for track in smf.tracks.iter() {
         let mut current_time = 0;
         for event in track.iter() {
-            current_time += event.delta.as_int() as u32;
+            current_time += event.delta.as_int();
             if let TrackEventKind::Meta(midly::MetaMessage::Tempo(tempo)) = event.kind {
                 tempo_changes.push(TempoChange {
                     time: current_time,
@@ -156,7 +273,7 @@ fn convert_track_with_tempo(
     println!("Converting track {}: {} notes", track_index, metrics.note_count);
     
     for event in track.iter() {
-        let delta_ticks = event.delta.as_int() as u32;
+        let delta_ticks = event.delta.as_int();
         if delta_ticks > 0 {
             let wait_duration = ticks_to_duration(
                 current_time_ticks,
@@ -186,59 +303,52 @@ fn convert_track_with_tempo(
 
         current_time_ticks += delta_ticks;
 
-        match event.kind {
-            TrackEventKind::Midi { message, .. } => match message {
-                midly::MidiMessage::NoteOn { key, vel } if vel.as_int() > 0 => {
-                    let frequency = note_to_frequency(i32::from(key.as_int()));
-                    // Scale amplitude to full range (0.0-1.0)
-                    let amplitude = f32::from(vel.as_int()) / 127.0;
-                    
-                    println!("  Note On: key={}, freq={:.1}, amp={:.2}", key.as_int(), frequency, amplitude);
-                    active_notes.push((key.as_int(), amplitude));
+        if let TrackEventKind::Midi { message, .. } = event.kind { match message {
+            midly::MidiMessage::NoteOn { key, vel } if vel.as_int() > 0 => {
+                let frequency = note_to_frequency(i32::from(key.as_int()));
+                // Scale amplitude to full range (0.0-1.0)
+                let amplitude = f32::from(vel.as_int()) / 127.0;
+                
+                println!("  Note On: key={}, freq={:.1}, amp={:.2}", key.as_int(), frequency, amplitude);
+                active_notes.push((key.as_int(), amplitude));
 
-                    if !last_event_had_wait || !commands.is_empty() {
-                        commands.push(RumbleCommand {
-                            frequency,
-                            amplitude,
-                            wait_before: Duration::ZERO,
-                        });
-                    } else {
-                        if let Some(last_command) = commands.last_mut() {
-                            last_command.frequency = frequency;
-                            last_command.amplitude = amplitude;
-                        }
-                    }
-                    last_event_had_wait = false;
+                if !last_event_had_wait || !commands.is_empty() {
+                    commands.push(RumbleCommand {
+                        frequency,
+                        amplitude,
+                        wait_before: Duration::ZERO,
+                    });
+                } else if let Some(last_command) = commands.last_mut() {
+                    last_command.frequency = frequency;
+                    last_command.amplitude = amplitude;
                 }
-                midly::MidiMessage::NoteOff { key, vel } => {
-                    active_notes.retain(|(note, _)| *note != key.as_int());
-                    let (frequency, amplitude) = if active_notes.is_empty() {
-                        (0.0, 0.0)
-                    } else {
-                        (
-                            note_to_frequency(active_notes[0].0 as i32),
-                            active_notes[0].1,
-                        )
-                    };
+                last_event_had_wait = false;
+            }
+            midly::MidiMessage::NoteOff { key, vel: _ } => {
+                active_notes.retain(|(note, _)| *note != key.as_int());
+                let (frequency, amplitude) = if active_notes.is_empty() {
+                    (0.0, 0.0)
+                } else {
+                    (
+                        note_to_frequency(active_notes[0].0 as i32),
+                        active_notes[0].1,
+                    )
+                };
 
-                    if !last_event_had_wait {
-                        commands.push(RumbleCommand {
-                            frequency,
-                            amplitude,
-                            wait_before: Duration::ZERO,
-                        });
-                    } else {
-                        if let Some(last_command) = commands.last_mut() {
-                            last_command.frequency = frequency;
-                            last_command.amplitude = amplitude;
-                        }
-                    }
-                    last_event_had_wait = false;
+                if !last_event_had_wait {
+                    commands.push(RumbleCommand {
+                        frequency,
+                        amplitude,
+                        wait_before: Duration::ZERO,
+                    });
+                } else if let Some(last_command) = commands.last_mut() {
+                    last_command.frequency = frequency;
+                    last_command.amplitude = amplitude;
                 }
-                _ => {}
-            },
+                last_event_had_wait = false;
+            }
             _ => {}
-        }
+        } }
     }
     let final_duration = ticks_to_duration(0, current_time_ticks, tempo_changes, ticks_per_beat);
 
@@ -284,16 +394,57 @@ fn find_commands_at_time(commands: &[RumbleCommand], time: Duration) -> usize {
     commands.len()
 }
 
+/// Controller for coordinating multi-track playback with dynamic track switching.
+///
+/// The `TrackMergeController` manages playback across multiple JoyCons, deciding
+/// when and where to switch tracks based on musical activity. It aims to keep
+/// each JoyCon playing the most interesting content available.
+///
+/// # Track Switching Logic
+///
+/// The controller switches tracks when:
+/// 1. The current track enters a silent period
+/// 2. Another track has significantly more activity
+/// 3. Enough time has passed since the last switch (minimum 2 seconds)
+/// 4. The switch occurs at a musically appropriate moment (note-off)
+///
+/// # Example Usage
+///
+/// ```no_run
+/// # use musical_joycons::midi::{RumbleTrack, TrackMergeController};
+/// # fn example(tracks: Vec<RumbleTrack>) {
+/// let num_joycons = 2;
+/// let controller = TrackMergeController::new(tracks, num_joycons);
+///
+/// // During playback, check if a switch should occur
+/// // let should_switch = controller.should_switch_tracks(0, current_track, target_track, cmd_idx);
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct TrackMergeController {
+    /// All available tracks for playback
     pub tracks: Vec<RumbleTrack>,
+
+    /// Current playback time position
     current_time: Duration,
+
+    /// Last switch time for each JoyCon (to enforce minimum interval)
     last_switch_times: Vec<Duration>,
 }
 
 impl TrackMergeController {
+    /// Size of the look-ahead window for evaluating track activity (2 seconds).
+    ///
+    /// When deciding whether to switch tracks, the controller looks at how many
+    /// notes each track will play in the next 2 seconds.
     pub const FUTURE_WINDOW_SIZE: Duration = Duration::from_secs(2);
 
+    /// Creates a new TrackMergeController.
+    ///
+    /// # Arguments
+    ///
+    /// * `tracks` - All available rumble tracks from the MIDI file
+    /// * `num_joycons` - Number of JoyCons that will be playing
     pub fn new(tracks: Vec<RumbleTrack>, num_joycons: usize) -> Self {
         Self {
             tracks,
@@ -302,6 +453,19 @@ impl TrackMergeController {
         }
     }
 
+    /// Evaluates a track section's activity level.
+    ///
+    /// Counts notes and finds maximum amplitude within a time window.
+    ///
+    /// # Arguments
+    ///
+    /// * `commands` - The rumble commands to analyze
+    /// * `start_time` - Start of the evaluation window
+    /// * `window_size` - Duration of the evaluation window
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(note_count, max_amplitude)` within the window.
     pub fn evaluate_track_section(
         commands: &[RumbleCommand],
         start_time: Duration,
@@ -314,11 +478,9 @@ impl TrackMergeController {
 
         for cmd in commands {
             current_time += cmd.wait_before;
-            if current_time >= start_time && current_time <= end_time {
-                if cmd.amplitude > 0.0 {
-                    note_count += 1;
-                    max_amplitude = max_amplitude.max(cmd.amplitude);
-                }
+            if current_time >= start_time && current_time <= end_time && cmd.amplitude > 0.0 {
+                note_count += 1;
+                max_amplitude = max_amplitude.max(cmd.amplitude);
             }
             if current_time > end_time {
                 break;
@@ -327,6 +489,31 @@ impl TrackMergeController {
         (note_count, max_amplitude)
     }
 
+    /// Determines whether a JoyCon should switch from its current track to a new one.
+    ///
+    /// This method implements the track switching heuristics, considering:
+    /// - Time since last switch (minimum 2 seconds)
+    /// - Note activity in both tracks for the next 2 seconds
+    /// - Track scores and quality metrics
+    ///
+    /// # Arguments
+    ///
+    /// * `joycon_idx` - Index of the JoyCon considering the switch
+    /// * `current_track_idx` - Index of the track currently being played
+    /// * `target_track_idx` - Index of the proposed new track
+    /// * `command_index` - Current position in the track's command list
+    ///
+    /// # Returns
+    ///
+    /// `true` if the switch should occur, `false` otherwise.
+    ///
+    /// # Switching Criteria
+    ///
+    /// A switch is recommended when:
+    /// 1. At least 2 seconds have passed since the last switch
+    /// 2. The target track has significantly more notes coming up
+    /// 3. The target track's maximum amplitude is at least 0.3
+    /// 4. The target track's score is at least 1.5x the current track's score
     pub fn should_switch_tracks(
         &self,
         joycon_idx: usize,
@@ -347,7 +534,7 @@ impl TrackMergeController {
         let target_track = &self.tracks[target_track_idx];
 
         // Evaluate both current and target tracks
-        let (current_notes, current_max_amp) = Self::evaluate_track_section(
+        let (current_notes, _current_max_amp) = Self::evaluate_track_section(
             &current_track.commands[command_index..],
             self.current_time,
             Self::FUTURE_WINDOW_SIZE
@@ -375,21 +562,83 @@ impl TrackMergeController {
         }
     }
 
+    /// Records that a track switch occurred for the specified JoyCon.
+    ///
+    /// This updates the last switch time, which is used to enforce the
+    /// minimum interval between switches.
+    ///
+    /// # Arguments
+    ///
+    /// * `joycon_idx` - Index of the JoyCon that performed the switch
     pub fn record_switch(&mut self, joycon_idx: usize) {
         self.last_switch_times[joycon_idx] = self.current_time;
     }
 
+    /// Updates the controller's current time position.
+    ///
+    /// Call this as playback progresses to keep the controller's time
+    /// synchronized with actual playback.
+    ///
+    /// # Arguments
+    ///
+    /// * `delta` - Amount of time that has elapsed
     pub fn update_time(&mut self, delta: Duration) {
         self.current_time += delta;
     }
 }
 
+/// Parses MIDI data and converts it to rumble tracks.
+///
+/// This is the main entry point for MIDI-to-rumble conversion. It handles
+/// the complete process of parsing, track selection, and conversion.
+///
+/// # Arguments
+///
+/// * `midi_data` - Raw bytes of a MIDI file
+/// * `track_selections` - Optional manual track selection. Pass an empty `Vec`
+///   or a `Vec` of `None` values for automatic selection.
+///
+/// # Track Selection
+///
+/// If `track_selections` is empty or contains only `None` values, the function
+/// automatically selects tracks based on their scores. Tracks are scored on:
+/// - Note density (notes per second)
+/// - Melodic movement
+/// - Pitch range
+/// - Velocity variance
+/// - Track type (melody > harmony > bass > drums)
+///
+/// Percussion tracks (MIDI channel 10) are excluded from automatic selection.
+///
+/// # Returns
+///
+/// A `Vec` of [`RumbleTrack`] objects, sorted by score (best first).
+///
+/// # Errors
+///
+/// - [`ParseError::MidiError`] - Invalid MIDI file format
+/// - [`ParseError::NoTracks`] - No playable tracks found
+///
+/// # Example
+///
+/// ```no_run
+/// use musical_joycons::midi::parse_midi_to_rumble;
+///
+/// let midi_data = std::fs::read("song.mid")?;
+///
+/// // Automatic track selection
+/// let tracks = parse_midi_to_rumble(&midi_data, vec![])?;
+///
+/// // Manual track selection (use tracks 0 and 2)
+/// let tracks = parse_midi_to_rumble(&midi_data, vec![Some(0), Some(2)])?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn parse_midi_to_rumble(
     midi_data: &[u8],
     track_selections: Vec<Option<usize>>,
 ) -> Result<Vec<RumbleTrack>, ParseError> {
     let smf = Smf::parse(midi_data)?;
-    let num_joycons = track_selections.len(); // This is our limit
+    let _num_joycons = track_selections.len();
 
     let ticks_per_beat = match smf.header.timing {
         midly::Timing::Metrical(timing) => timing.as_int() as f32,
@@ -463,7 +712,7 @@ pub fn parse_midi_to_rumble(
     // Normalize all amplitudes in the tracks
     for track in &mut rumble_tracks {
         for cmd in &mut track.commands {
-            cmd.amplitude = cmd.amplitude / max_velocity;
+            cmd.amplitude /= max_velocity;
         }
     }
 
@@ -506,18 +755,15 @@ pub fn parse_midi_to_rumble(
         for switch_point in &mut rumble_tracks[i].switch_points {
             let mut available_tracks: Vec<(usize, f32)> = alternative_tracks
                 .iter()
-                .filter(|(idx, _score, activity)| {
+                .filter(|(_idx, _score, activity)| {
                     // Find tracks that will be active at or soon after the switch point
                     let mut is_active = false;
-                    let current_time = Duration::ZERO;
                     let look_ahead = Duration::from_millis(500);
 
                     for (time, active) in activity.iter() {
-                        if *time >= switch_point.time && *time <= switch_point.time + look_ahead {
-                            if *active {
-                                is_active = true;
-                                break;
-                            }
+                        if *time >= switch_point.time && *time <= switch_point.time + look_ahead && *active {
+                            is_active = true;
+                            break;
                         }
                     }
                     is_active
