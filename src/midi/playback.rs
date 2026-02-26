@@ -1,80 +1,142 @@
-//! MIDI playback coordination across multiple JoyCons.
+//! MIDI playback coordination across multiple JoyCons with runtime L/R swap.
 //!
-//! This module provides the high-level playback functionality, coordinating
-//! multiple JoyCons to play different tracks from a MIDI file simultaneously.
+//! The playback system uses a pre-computed [`PlaybackPlan`] combined with a
+//! [`JoyConBinding`] that maps the primary and secondary parts to Left/Right
+//! Joy-Cons. The binding can be changed at runtime via keyboard controls.
 //!
-//! # Playback Architecture
+//! # Runtime Controls
 //!
-//! The playback system uses multiple threads:
+//! During playback the following keyboard shortcuts are active:
 //!
-//! 1. **Main thread**: Loads MIDI, initializes JoyCons, coordinates startup
-//! 2. **Ranking thread**: Continuously evaluates track activity and reassigns tracks
-//! 3. **JoyCon threads**: One per device, handles rumble command execution
-//!
-//! # Track Assignment
-//!
-//! Initial track assignment is based on track scores. During playback:
-//! - The ranking thread evaluates upcoming note activity every 250ms
-//! - If a better track is found, the assignment is updated
-//! - JoyCon threads switch to new tracks during silent periods (note-off events)
-//!
-//! # Synchronization
-//!
-//! All JoyCon threads wait for a shared start signal before beginning playback,
-//! ensuring synchronized start across all devices.
+//! | Key | Action |
+//! |-----|--------|
+//! | `S` | Swap L/R assignment |
+//! | `1` | Cycle to next primary candidate |
+//! | `2` | Cycle to next secondary candidate |
+//! | `Q` | Quit playback |
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::joycon::JoyConManager;
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 
-use super::rumble::{parse_midi_to_rumble, RumbleCommand, TrackMergeController};
+use crate::joycon::{JoyConManager, JoyConType};
 
-/// How often the ranking thread re-evaluates track assignments.
-const RANKING_WINDOW: Duration = Duration::from_millis(500);
+use super::rumble::{parse_midi_to_rumble, RumbleCommand};
+use super::scoring::PartSelection;
 
-/// Finds the command index at or just before the specified time.
+/// Maps the primary and secondary parts to physical Joy-Con sides.
 ///
-/// Used when switching tracks to find the right starting position.
-///
-/// # Arguments
-///
-/// * `commands` - The command sequence to search
-/// * `target_time` - The time position to find
-///
-/// # Returns
-///
-/// Index of the first command that would execute after `target_time`,
-/// or `commands.len()` if past the end.
+/// Playback threads read this through a shared `Arc<Mutex<…>>` on every
+/// command. Swap and cycle operations only touch the binding — they never
+/// alter the underlying note timelines.
+#[derive(Debug, Clone)]
+pub struct JoyConBinding {
+    pub primary_part_idx: usize,
+    pub secondary_part_idx: usize,
+    /// `true` → Right Joy-Con plays primary, Left plays secondary.
+    pub primary_on_right: bool,
+
+    pub primary_candidates: Vec<usize>,
+    pub secondary_candidates: Vec<usize>,
+    primary_candidate_pos: usize,
+    secondary_candidate_pos: usize,
+}
+
+impl JoyConBinding {
+    pub fn new(selection: &PartSelection) -> Self {
+        Self {
+            primary_part_idx: selection.primary,
+            secondary_part_idx: selection.secondary,
+            primary_on_right: true,
+            primary_candidates: selection.primary_candidates.clone(),
+            secondary_candidates: selection.secondary_candidates.clone(),
+            primary_candidate_pos: 0,
+            secondary_candidate_pos: 0,
+        }
+    }
+
+    /// Returns the rumble-track index that should play on the given Joy-Con side.
+    pub fn track_for_side(&self, side: JoyConSide) -> usize {
+        match (side, self.primary_on_right) {
+            (JoyConSide::Right, true) | (JoyConSide::Left, false) => self.primary_part_idx,
+            (JoyConSide::Left, true) | (JoyConSide::Right, false) => self.secondary_part_idx,
+        }
+    }
+
+    pub fn swap(&mut self) {
+        self.primary_on_right = !self.primary_on_right;
+        let side_str = if self.primary_on_right {
+            "Right"
+        } else {
+            "Left"
+        };
+        println!("🔄 Swapped — primary now on {side_str} Joy-Con");
+    }
+
+    pub fn cycle_primary(&mut self) {
+        if self.primary_candidates.len() <= 1 {
+            return;
+        }
+        self.primary_candidate_pos =
+            (self.primary_candidate_pos + 1) % self.primary_candidates.len();
+        self.primary_part_idx = self.primary_candidates[self.primary_candidate_pos];
+        println!(
+            "🔁 Primary → part {} (candidate {}/{})",
+            self.primary_part_idx,
+            self.primary_candidate_pos + 1,
+            self.primary_candidates.len()
+        );
+    }
+
+    pub fn cycle_secondary(&mut self) {
+        if self.secondary_candidates.len() <= 1 {
+            return;
+        }
+        self.secondary_candidate_pos =
+            (self.secondary_candidate_pos + 1) % self.secondary_candidates.len();
+        self.secondary_part_idx = self.secondary_candidates[self.secondary_candidate_pos];
+        println!(
+            "🔁 Secondary → part {} (candidate {}/{})",
+            self.secondary_part_idx,
+            self.secondary_candidate_pos + 1,
+            self.secondary_candidates.len()
+        );
+    }
+}
+
+/// Logical side of a Joy-Con for binding purposes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoyConSide {
+    Left,
+    Right,
+}
+
+impl JoyConSide {
+    pub fn from_joycon_type(jt: JoyConType) -> Self {
+        match jt {
+            JoyConType::Left => Self::Left,
+            JoyConType::Right => Self::Right,
+            // Pro Controllers default to "Right" (primary side).
+            _ => Self::Right,
+        }
+    }
+}
+
 fn find_commands_at_time(commands: &[RumbleCommand], target_time: Duration) -> usize {
     let mut accumulated_time = Duration::ZERO;
-
     for (idx, cmd) in commands.iter().enumerate() {
         if accumulated_time + cmd.wait_before > target_time {
             return idx;
         }
         accumulated_time += cmd.wait_before;
     }
-
     commands.len()
 }
 
-/// Determines if a command represents a note-off transition.
-///
-/// A note-off occurs when the previous command had non-zero amplitude
-/// and the current command has zero amplitude. This is the ideal time
-/// for track switching as it won't interrupt a sounding note.
-///
-/// # Arguments
-///
-/// * `cmd` - The current command
-/// * `prev_cmd` - The previous command, if any
-///
-/// # Returns
-///
-/// `true` if this is a note-off transition, `false` otherwise.
 fn is_note_off(cmd: &RumbleCommand, prev_cmd: Option<&RumbleCommand>) -> bool {
     match prev_cmd {
         Some(prev) => prev.amplitude > 0.0 && cmd.amplitude == 0.0,
@@ -82,54 +144,64 @@ fn is_note_off(cmd: &RumbleCommand, prev_cmd: Option<&RumbleCommand>) -> bool {
     }
 }
 
-/// Plays a MIDI file through connected JoyCons.
+/// Spawns a thread that reads keyboard events and mutates the binding.
+fn spawn_input_thread(
+    binding: Arc<Mutex<JoyConBinding>>,
+    quit: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        // Enable raw mode so key-presses arrive immediately.
+        let raw_ok = crossterm::terminal::enable_raw_mode().is_ok();
+
+        while !quit.load(Ordering::Relaxed) {
+            if event::poll(Duration::from_millis(50)).unwrap_or(false) {
+                if let Ok(Event::Key(KeyEvent {
+                    code,
+                    kind: KeyEventKind::Press,
+                    ..
+                })) = event::read()
+                {
+                    match code {
+                        KeyCode::Char('s') | KeyCode::Char('S') => {
+                            if let Ok(mut b) = binding.lock() {
+                                b.swap();
+                            }
+                        }
+                        KeyCode::Char('1') => {
+                            if let Ok(mut b) = binding.lock() {
+                                b.cycle_primary();
+                            }
+                        }
+                        KeyCode::Char('2') => {
+                            if let Ok(mut b) = binding.lock() {
+                                b.cycle_secondary();
+                            }
+                        }
+                        KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                            println!("\n⏹  Quitting playback…");
+                            quit.store(true, Ordering::Relaxed);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if raw_ok {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
+    })
+}
+
+/// Plays a MIDI file through connected JoyCons with runtime L/R swap support.
 ///
-/// This is the main entry point for MIDI playback. It handles the complete
-/// process from file loading through synchronized multi-JoyCon playback.
+/// # Runtime Controls
 ///
-/// # Process
-///
-/// 1. Initialize the JoyCon manager and connect to devices
-/// 2. Load and parse the MIDI file
-/// 3. Analyze tracks and assign the best ones to available JoyCons
-/// 4. Start synchronized playback with dynamic track reassignment
-/// 5. Wait for all tracks to complete
-///
-/// # Arguments
-///
-/// * `path` - Path to the MIDI file to play
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - No JoyCons can be found or connected
-/// - The MIDI file cannot be read or parsed
-/// - No playable tracks are found in the file
-/// - HID communication fails during playback
-///
-/// # Example
-///
-/// ```no_run
-/// use musical_joycons::midi::play_midi_file;
-/// use std::path::PathBuf;
-///
-/// let path = PathBuf::from("song.mid");
-/// play_midi_file(path)?;
-/// # Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-/// ```
-///
-/// # Blocking
-///
-/// This function blocks until playback completes. For non-blocking playback,
-/// call from a separate thread.
-///
-/// # Console Output
-///
-/// The function prints status messages during playback:
-/// - Device discovery progress
-/// - Track assignment information
-/// - Dynamic track switching events
-/// - Playback completion
+/// While the song is playing press:
+/// - **S** to swap which Joy-Con plays the primary (melody) part
+/// - **1** to cycle to the next primary candidate
+/// - **2** to cycle to the next secondary candidate
+/// - **Q** or **Esc** to stop playback
 pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let manager = JoyConManager::new()?;
     let joycons = manager.connect_and_initialize_joycons()?;
@@ -138,196 +210,118 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
     println!("🎵 Loading MIDI file: {:?}", path);
     let midi_data = std::fs::read(&path)?;
 
-    // Load ALL tracks by passing an empty vec
-    let tracks = parse_midi_to_rumble(&midi_data, vec![])?;
+    let (tracks, plan, selection) = parse_midi_to_rumble(&midi_data, num_joycons)?;
 
-    // Create initial assignments from the best tracks
-    let mut track_scores: Vec<(usize, f32)> = tracks
-        .iter()
-        .enumerate()
-        .filter(|(_, track)| !track.metrics.is_percussion && track.metrics.note_count > 0)
-        .map(|(idx, track)| (idx, track.metrics.calculate_score()))
-        .collect();
-
-    if track_scores.is_empty() {
-        return Err("No playable tracks found in MIDI file".into());
+    println!("\nAvailable parts (rumble tracks): {}", tracks.len());
+    for (idx, track) in tracks.iter().enumerate() {
+        println!(
+            "  Part {} : {} notes, {} cmds, dur={:.1}s, type={:?}, name={:?}",
+            idx,
+            track.metrics.note_count,
+            track.commands.len(),
+            track.total_duration.as_secs_f32(),
+            track.metrics.track_type,
+            track.metrics.track_name.as_deref().unwrap_or("-")
+        );
     }
 
-    track_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    let initial_assignments: Vec<usize> = track_scores
-        .iter()
-        .take(num_joycons)
-        .map(|(idx, _)| *idx)
-        .collect();
-
-    println!("Available tracks: {}", tracks.len());
-    println!("Initial assignments: {:?}", initial_assignments);
-    println!("Top track scores:");
-    for (idx, score) in track_scores.iter().take(joycons.len()) {
-        println!("  Track {}: {:.2}", idx, score);
-    }
-
+    let binding = Arc::new(Mutex::new(JoyConBinding::new(&selection)));
+    let quit = Arc::new(AtomicBool::new(false));
     let start_signal = Arc::new(Mutex::new(false));
-    let current_assignments = Arc::new(Mutex::new(initial_assignments.clone()));
-    let active_tracks = Arc::new(Mutex::new(vec![true; tracks.len()]));
+
+    // Spawn the keyboard input thread.
+    let input_handle = spawn_input_thread(Arc::clone(&binding), Arc::clone(&quit));
+
     let mut handles: Vec<
-        std::thread::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+        thread::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
     > = Vec::new();
 
-    // Spawn ranking thread
-    let ranking_signal = Arc::clone(&start_signal);
-    let ranking_assignments = Arc::clone(&current_assignments);
-    let ranking_active = Arc::clone(&active_tracks);
-    let ranking_tracks = tracks.clone();
-
-    thread::spawn(move || {
-        while !*ranking_signal.lock().unwrap_or_else(|e| e.into_inner()) {
-            thread::sleep(Duration::from_millis(1));
-        }
-
-        let mut current_time = Duration::ZERO;
-
-        loop {
-            // Score ALL tracks, not just the currently assigned ones
-            let mut track_scores: Vec<(usize, f32, usize)> = ranking_tracks
-                .iter()
-                .enumerate()
-                .filter(|(idx, track)| {
-                    ranking_active.lock().unwrap_or_else(|e| e.into_inner())[*idx]
-                        && !track.metrics.is_percussion
-                })
-                .map(|(idx, track)| {
-                    let (note_count, max_amp) = TrackMergeController::evaluate_track_section(
-                        &track.commands,
-                        current_time,
-                        TrackMergeController::FUTURE_WINDOW_SIZE,
-                    );
-                    let score = if max_amp >= 0.3 && note_count > 0 {
-                        track.metrics.calculate_window_score(
-                            note_count,
-                            TrackMergeController::FUTURE_WINDOW_SIZE.as_secs_f32(),
-                        )
-                    } else {
-                        0.0
-                    };
-                    (idx, score, note_count)
-                })
-                .collect();
-
-            // Sort by note count first, then by score
-            track_scores.sort_by(|a, b| {
-                b.2.cmp(&a.2)
-                    .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
-            });
-
-            // Take the top N tracks for N JoyCons
-            let mut new_assignments = vec![];
-            for (idx, _, _) in track_scores.iter().take(5) {
-                new_assignments.push(*idx);
-            }
-
-            // Update assignments if changed and there are active notes
-            let mut assignments: std::sync::MutexGuard<'_, Vec<usize>> = ranking_assignments
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if *assignments != new_assignments {
-                let should_switch = track_scores
-                    .iter()
-                    .take(num_joycons)
-                    .any(|(_, _, notes)| *notes > 0);
-
-                if should_switch {
-                    println!(
-                        "🔄 Reassigning tracks: {:?} (notes: {:?}, scores: {:?})",
-                        new_assignments,
-                        track_scores
-                            .iter()
-                            .take(num_joycons)
-                            .map(|(_, _, notes)| notes)
-                            .collect::<Vec<_>>(),
-                        track_scores
-                            .iter()
-                            .take(num_joycons)
-                            .map(|(_, score, _)| format!("{:.2}", score))
-                            .collect::<Vec<_>>()
-                    );
-                    *assignments = new_assignments;
-                }
-            }
-            drop(assignments);
-
-            thread::sleep(RANKING_WINDOW / 2);
-            current_time += RANKING_WINDOW / 2;
-
-            // Check if all tracks are complete
-            if ranking_active
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .iter()
-                .all(|&active| !active)
-            {
-                break;
-            }
-        }
-    });
-
-    let merge_controller = Arc::new(Mutex::new(TrackMergeController::new(
-        tracks.clone(),
-        num_joycons,
-    )));
-
-    // Spawn JoyCon threads
     for (joycon_idx, mut joycon) in joycons.into_iter().enumerate() {
         let joycon_signal = Arc::clone(&start_signal);
-        let joycon_assignments = Arc::clone(&current_assignments);
-        let joycon_active = Arc::clone(&active_tracks);
         let joycon_tracks = tracks.clone();
-        let initial_assignments = initial_assignments.clone();
-        let merge_controller = Arc::clone(&merge_controller);
+        let joycon_plan = plan.clone();
+        let joycon_binding = Arc::clone(&binding);
+        let joycon_quit = Arc::clone(&quit);
+        let side = JoyConSide::from_joycon_type(joycon.get_type());
 
         handles.push(thread::spawn(move || {
             while !*joycon_signal.lock().unwrap_or_else(|e| e.into_inner()) {
                 thread::sleep(Duration::from_millis(1));
             }
 
-            println!("🎮 JoyCon {} starting playback", joycon_idx + 1);
-            let mut current_time = Duration::ZERO;
-            let mut current_track_idx = initial_assignments[joycon_idx]; // Start with initial assignment
+            // Resolve which track this Joy-Con should start on.
+            let mut current_track_idx = joycon_binding
+                .lock()
+                .map(|b| b.track_for_side(side))
+                .unwrap_or(0);
             let mut command_index = 0;
+            let mut current_time = Duration::ZERO;
             let mut pending_track_switch: Option<usize> = None;
+            let mut next_section_time = joycon_plan.next_section_time(Duration::ZERO);
+
+            println!(
+                "🎮 JoyCon {} ({:?}) starting on part {}",
+                joycon_idx + 1,
+                side,
+                current_track_idx
+            );
 
             loop {
-                let track = &joycon_tracks[current_track_idx];
-                if command_index >= track.commands.len() {
-                    println!(
-                        "🎮 JoyCon {} finished track {}",
-                        joycon_idx + 1,
-                        current_track_idx
-                    );
-                    joycon_active.lock().unwrap_or_else(|e| e.into_inner())[current_track_idx] =
-                        false;
+                if joycon_quit.load(Ordering::Relaxed) {
                     break;
                 }
 
-                // Check for track reassignment
-                let assignments = joycon_assignments.lock().unwrap_or_else(|e| e.into_inner());
-                let assigned_track_idx = assignments[joycon_idx];
-                drop(assignments);
+                // Check if the binding changed (swap / cycle).
+                let desired_track = joycon_binding
+                    .lock()
+                    .map(|b| b.track_for_side(side))
+                    .unwrap_or(current_track_idx);
 
-                if assigned_track_idx != current_track_idx {
-                    let should_switch = merge_controller
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .should_switch_tracks(
-                            joycon_idx,
-                            current_track_idx,
-                            assigned_track_idx,
-                            command_index,
-                        );
+                if desired_track != current_track_idx
+                    && desired_track < joycon_tracks.len()
+                {
+                    current_track_idx = desired_track;
+                    command_index =
+                        find_commands_at_time(&joycon_tracks[current_track_idx].commands, current_time);
+                    pending_track_switch = None;
+                }
 
-                    if should_switch {
-                        pending_track_switch = Some(assigned_track_idx);
+                let track = &joycon_tracks[current_track_idx];
+
+                if command_index >= track.commands.len() {
+                    let mut found_next = false;
+                    let mut scan_time = next_section_time;
+                    while let Some(boundary) = scan_time {
+                        let candidate = joycon_plan.track_for(joycon_idx, boundary);
+                        if candidate != current_track_idx {
+                            let ci = find_commands_at_time(
+                                &joycon_tracks[candidate].commands,
+                                current_time,
+                            );
+                            if ci < joycon_tracks[candidate].commands.len() {
+                                current_track_idx = candidate;
+                                command_index = ci;
+                                next_section_time = joycon_plan.next_section_time(boundary);
+                                found_next = true;
+                                break;
+                            }
+                        }
+                        scan_time = joycon_plan.next_section_time(boundary);
+                    }
+                    if !found_next {
+                        break;
+                    }
+                    continue;
+                }
+
+                // Section boundary crossing.
+                if let Some(boundary) = next_section_time {
+                    if current_time >= boundary {
+                        let new_track = joycon_plan.track_for(joycon_idx, current_time);
+                        if new_track != current_track_idx {
+                            pending_track_switch = Some(new_track);
+                        }
+                        next_section_time = joycon_plan.next_section_time(current_time);
                     }
                 }
 
@@ -338,58 +332,34 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                     None
                 };
 
-                // If we have a pending switch and current command is a note-off
+                // Execute pending switch at note-off boundary.
                 if let Some(new_track_idx) = pending_track_switch {
                     if is_note_off(cmd, prev_cmd) {
-                        println!(
-                            "🎮 JoyCon {} switching from track {} to {} at {:?} (note off)",
-                            joycon_idx + 1,
-                            current_track_idx,
-                            new_track_idx,
-                            current_time
-                        );
-
                         current_track_idx = new_track_idx;
-                        let new_index = find_commands_at_time(
+                        command_index = find_commands_at_time(
                             &joycon_tracks[current_track_idx].commands,
                             current_time,
                         );
-                        println!(
-                            "  → New command index: {} (total commands: {})",
-                            new_index,
-                            joycon_tracks[current_track_idx].commands.len()
-                        );
-                        command_index = new_index;
                         pending_track_switch = None;
-                        merge_controller
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .record_switch(joycon_idx);
-                        continue; // Restart loop with new track
+                        continue;
                     }
-                }
-
-                // Debug output for commands
-                if cmd.amplitude > 0.0 {
-                    println!(
-                        "🎮 JoyCon {} playing note: freq={:.1}, amp={:.2}, wait={:?}",
-                        joycon_idx + 1,
-                        cmd.frequency,
-                        cmd.amplitude,
-                        cmd.wait_before
-                    );
                 }
 
                 if !cmd.wait_before.is_zero() {
                     thread::sleep(cmd.wait_before);
-                    merge_controller
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .update_time(cmd.wait_before);
                     current_time += cmd.wait_before;
                 }
 
-                // Send the rumble command
+                if cmd.amplitude > 0.0 {
+                    println!(
+                        "🎮 JoyCon {} playing: freq={:.1}, amp={:.2}, t={:.2}s",
+                        joycon_idx + 1,
+                        cmd.frequency,
+                        cmd.amplitude,
+                        current_time.as_secs_f32()
+                    );
+                }
+
                 joycon.rumble(cmd.frequency, cmd.amplitude)?;
                 command_index += 1;
             }
@@ -400,17 +370,20 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
         }));
     }
 
-    // Start playback
-    println!("\n▶️ Starting playback...");
+    println!("\n▶️  Starting playback…");
+    println!("    S = swap L/R  |  1 = cycle primary  |  2 = cycle secondary  |  Q = quit\n");
     *start_signal.lock().unwrap_or_else(|e| e.into_inner()) = true;
 
-    // Wait for all tracks to complete
     for handle in handles {
         match handle.join() {
             Ok(result) => result?,
             Err(_) => return Err("A playback thread panicked".into()),
         }
     }
+
+    // Signal the input thread to stop and wait for it.
+    quit.store(true, Ordering::Relaxed);
+    let _ = input_handle.join();
 
     println!("✨ Playback complete!");
     Ok(())
@@ -419,6 +392,7 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::midi::scoring::PartSelection;
 
     #[test]
     fn test_find_commands_at_time() {
@@ -473,20 +447,69 @@ mod tests {
             wait_before: Duration::from_millis(100),
         };
 
-        // Test with no previous command
         assert!(!is_note_off(&note_on, None));
         assert!(!is_note_off(&note_off, None));
-
-        // Test note off after note on
         assert!(is_note_off(&note_off, Some(&note_on)));
-
-        // Test note on after note off
         assert!(!is_note_off(&note_on, Some(&note_off)));
-
-        // Test note on after note on
         assert!(!is_note_off(&note_on, Some(&note_on)));
-
-        // Test note off after note off
         assert!(!is_note_off(&note_off, Some(&note_off)));
+    }
+
+    #[test]
+    fn test_binding_swap() {
+        let sel = PartSelection {
+            primary: 0,
+            secondary: 1,
+            primary_candidates: vec![0, 2],
+            secondary_candidates: vec![1, 3],
+        };
+        let mut binding = JoyConBinding::new(&sel);
+
+        assert!(binding.primary_on_right);
+        assert_eq!(binding.track_for_side(JoyConSide::Right), 0);
+        assert_eq!(binding.track_for_side(JoyConSide::Left), 1);
+
+        binding.swap();
+
+        assert!(!binding.primary_on_right);
+        assert_eq!(binding.track_for_side(JoyConSide::Right), 1);
+        assert_eq!(binding.track_for_side(JoyConSide::Left), 0);
+    }
+
+    #[test]
+    fn test_binding_cycle_primary() {
+        let sel = PartSelection {
+            primary: 0,
+            secondary: 1,
+            primary_candidates: vec![0, 2, 4],
+            secondary_candidates: vec![1],
+        };
+        let mut binding = JoyConBinding::new(&sel);
+
+        binding.cycle_primary();
+        assert_eq!(binding.primary_part_idx, 2);
+
+        binding.cycle_primary();
+        assert_eq!(binding.primary_part_idx, 4);
+
+        binding.cycle_primary();
+        assert_eq!(binding.primary_part_idx, 0); // wraps around
+    }
+
+    #[test]
+    fn test_binding_cycle_secondary() {
+        let sel = PartSelection {
+            primary: 0,
+            secondary: 1,
+            primary_candidates: vec![0],
+            secondary_candidates: vec![1, 3],
+        };
+        let mut binding = JoyConBinding::new(&sel);
+
+        binding.cycle_secondary();
+        assert_eq!(binding.secondary_part_idx, 3);
+
+        binding.cycle_secondary();
+        assert_eq!(binding.secondary_part_idx, 1); // wraps
     }
 }

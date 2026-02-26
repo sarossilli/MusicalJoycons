@@ -1,0 +1,17 @@
+{
+  "name": "Musical JoyCons",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "musical-joycons",
+  "workspaceFolder": "/workspaces/MusicalJoycons",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer"
+      ],
+      "settings": {
+        "rust-analyzer.check.command": "clippy"
+      }
+    }
+  },
+  "postCreateCommand": "cargo fetch"
+}

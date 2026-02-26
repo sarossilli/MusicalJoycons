@@ -18,13 +18,16 @@
 //! 4. Identify silent periods for potential track switching
 //! 5. Normalize amplitudes across all tracks
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
-use midly::{Smf, Track, TrackEventKind};
+use midly::{Smf, TrackEventKind};
 use thiserror::Error;
 
-use super::track_analysis::analyze_track;
-use super::track_types::TrackMetrics;
+use super::parts::{normalize_to_parts, Part};
+use super::scoring::{select_parts, secondary_score, PartSelection};
+use super::track_analysis::{analyze_part, PartFeatures};
+use super::track_types::{PlaybackPlan, SectionAssignment, TrackMetrics, TrackType};
 
 /// A single rumble command to send to a JoyCon.
 ///
@@ -258,35 +261,31 @@ fn find_silent_periods(commands: &[RumbleCommand]) -> Vec<(Duration, Duration)> 
     silent_periods
 }
 
-fn convert_track_with_tempo(
-    track: &Track,
+/// Convert a [`Part`] (pre-resolved NoteObjects) into a [`RumbleTrack`].
+fn convert_part_to_rumble(
+    part: &Part,
+    part_index: usize,
+    features: &PartFeatures,
     tempo_changes: &[TempoChange],
     ticks_per_beat: f32,
-    track_index: usize,
-    metrics: TrackMetrics, // Add metrics parameter
-) -> Result<RumbleTrack, ParseError> {
+) -> RumbleTrack {
+    // Build a flat event list: (tick, is_on, pitch, velocity)
+    let mut events: Vec<(u32, bool, u8, f32)> = Vec::with_capacity(part.notes.len() * 2);
+    for n in &part.notes {
+        events.push((n.start_tick, true, n.pitch, n.velocity as f32 / 127.0));
+        events.push((n.end_tick, false, n.pitch, 0.0));
+    }
+    events.sort_by_key(|e| (e.0, !e.1)); // note-offs before note-ons at same tick
+
     let mut commands = Vec::new();
-    let mut current_time_ticks = 0u32;
     let mut active_notes: Vec<(u8, f32)> = Vec::new();
-    let mut last_event_had_wait = false;
+    let mut current_tick = 0u32;
 
-    println!(
-        "Converting track {}: {} notes",
-        track_index, metrics.note_count
-    );
-
-    for event in track.iter() {
-        let delta_ticks = event.delta.as_int();
-        if delta_ticks > 0 {
-            let wait_duration = ticks_to_duration(
-                current_time_ticks,
-                current_time_ticks + delta_ticks,
-                tempo_changes,
-                ticks_per_beat,
-            );
-
-            if !wait_duration.is_zero() {
-                let (frequency, amplitude) = if active_notes.is_empty() {
+    for (tick, is_on, pitch, vel) in &events {
+        if *tick > current_tick {
+            let wait = ticks_to_duration(current_tick, *tick, tempo_changes, ticks_per_beat);
+            if !wait.is_zero() {
+                let (freq, amp) = if active_notes.is_empty() {
                     (0.0, 0.0)
                 } else {
                     (
@@ -294,74 +293,42 @@ fn convert_track_with_tempo(
                         active_notes[0].1,
                     )
                 };
-
                 commands.push(RumbleCommand {
-                    frequency,
-                    amplitude,
-                    wait_before: wait_duration,
+                    frequency: freq,
+                    amplitude: amp,
+                    wait_before: wait,
                 });
-                last_event_had_wait = true;
             }
+            current_tick = *tick;
         }
 
-        current_time_ticks += delta_ticks;
-
-        if let TrackEventKind::Midi { message, .. } = event.kind {
-            match message {
-                midly::MidiMessage::NoteOn { key, vel } if vel.as_int() > 0 => {
-                    let frequency = note_to_frequency(i32::from(key.as_int()));
-                    // Scale amplitude to full range (0.0-1.0)
-                    let amplitude = f32::from(vel.as_int()) / 127.0;
-
-                    println!(
-                        "  Note On: key={}, freq={:.1}, amp={:.2}",
-                        key.as_int(),
-                        frequency,
-                        amplitude
-                    );
-                    active_notes.push((key.as_int(), amplitude));
-
-                    if !last_event_had_wait || !commands.is_empty() {
-                        commands.push(RumbleCommand {
-                            frequency,
-                            amplitude,
-                            wait_before: Duration::ZERO,
-                        });
-                    } else if let Some(last_command) = commands.last_mut() {
-                        last_command.frequency = frequency;
-                        last_command.amplitude = amplitude;
-                    }
-                    last_event_had_wait = false;
-                }
-                midly::MidiMessage::NoteOff { key, vel: _ } => {
-                    active_notes.retain(|(note, _)| *note != key.as_int());
-                    let (frequency, amplitude) = if active_notes.is_empty() {
-                        (0.0, 0.0)
-                    } else {
-                        (
-                            note_to_frequency(active_notes[0].0 as i32),
-                            active_notes[0].1,
-                        )
-                    };
-
-                    if !last_event_had_wait {
-                        commands.push(RumbleCommand {
-                            frequency,
-                            amplitude,
-                            wait_before: Duration::ZERO,
-                        });
-                    } else if let Some(last_command) = commands.last_mut() {
-                        last_command.frequency = frequency;
-                        last_command.amplitude = amplitude;
-                    }
-                    last_event_had_wait = false;
-                }
-                _ => {}
-            }
+        if *is_on {
+            active_notes.push((*pitch, *vel));
+            let freq = note_to_frequency(*pitch as i32);
+            commands.push(RumbleCommand {
+                frequency: freq,
+                amplitude: *vel,
+                wait_before: Duration::ZERO,
+            });
+        } else {
+            active_notes.retain(|(p, _)| *p != *pitch);
+            let (freq, amp) = if active_notes.is_empty() {
+                (0.0, 0.0)
+            } else {
+                (
+                    note_to_frequency(active_notes[0].0 as i32),
+                    active_notes[0].1,
+                )
+            };
+            commands.push(RumbleCommand {
+                frequency: freq,
+                amplitude: amp,
+                wait_before: Duration::ZERO,
+            });
         }
     }
-    let final_duration = ticks_to_duration(0, current_time_ticks, tempo_changes, ticks_per_beat);
 
+    // Ensure track ends with silence.
     if let Some(last) = commands.last() {
         if last.frequency != 0.0 || last.amplitude != 0.0 {
             commands.push(RumbleCommand {
@@ -372,290 +339,321 @@ fn convert_track_with_tempo(
         }
     }
 
+    let final_tick = part
+        .notes
+        .iter()
+        .map(|n| n.end_tick)
+        .max()
+        .unwrap_or(0);
+    let total_duration = ticks_to_duration(0, final_tick, tempo_changes, ticks_per_beat);
+
     let silent_periods = find_silent_periods(&commands);
     let switch_points = silent_periods
         .into_iter()
         .map(|(time, _)| TrackSwitchPoint {
             time,
-            alternative_track_index: track_index, // Will be updated later
+            alternative_track_index: part_index,
         })
         .collect();
 
-    println!(
-        "Track {} converted: {} commands",
-        track_index,
-        commands.len()
-    );
-
-    Ok(RumbleTrack {
-        commands,
-        total_duration: final_duration,
-        switch_points,
-        track_index,
-        metrics, // Include metrics in struct initialization
-    })
-}
-
-// Update the is_track_active_at_time function to look ahead a bit
-fn find_commands_at_time(commands: &[RumbleCommand], time: Duration) -> usize {
-    let mut current_time = Duration::ZERO;
-    for (i, cmd) in commands.iter().enumerate() {
-        current_time += cmd.wait_before;
-        if current_time >= time {
-            return i;
-        }
-    }
-    commands.len()
-}
-
-/// Controller for coordinating multi-track playback with dynamic track switching.
-///
-/// The `TrackMergeController` manages playback across multiple JoyCons, deciding
-/// when and where to switch tracks based on musical activity. It aims to keep
-/// each JoyCon playing the most interesting content available.
-///
-/// # Track Switching Logic
-///
-/// The controller switches tracks when:
-/// 1. The current track enters a silent period
-/// 2. Another track has significantly more activity
-/// 3. Enough time has passed since the last switch (minimum 2 seconds)
-/// 4. The switch occurs at a musically appropriate moment (note-off)
-///
-/// # Example Usage
-///
-/// ```no_run
-/// # use musical_joycons::midi::{RumbleTrack, TrackMergeController};
-/// # fn example(tracks: Vec<RumbleTrack>) {
-/// let num_joycons = 2;
-/// let controller = TrackMergeController::new(tracks, num_joycons);
-///
-/// // During playback, check if a switch should occur
-/// // let should_switch = controller.should_switch_tracks(0, current_track, target_track, cmd_idx);
-/// # }
-/// ```
-#[derive(Debug)]
-pub struct TrackMergeController {
-    /// All available tracks for playback
-    pub tracks: Vec<RumbleTrack>,
-
-    /// Current playback time position
-    current_time: Duration,
-
-    /// Last switch time for each JoyCon (to enforce minimum interval)
-    last_switch_times: Vec<Duration>,
-}
-
-impl TrackMergeController {
-    /// Size of the look-ahead window for evaluating track activity (2 seconds).
-    ///
-    /// When deciding whether to switch tracks, the controller looks at how many
-    /// notes each track will play in the next 2 seconds.
-    pub const FUTURE_WINDOW_SIZE: Duration = Duration::from_secs(2);
-
-    /// Creates a new TrackMergeController.
-    ///
-    /// # Arguments
-    ///
-    /// * `tracks` - All available rumble tracks from the MIDI file
-    /// * `num_joycons` - Number of JoyCons that will be playing
-    pub fn new(tracks: Vec<RumbleTrack>, num_joycons: usize) -> Self {
-        Self {
-            tracks,
-            current_time: Duration::ZERO,
-            last_switch_times: vec![Duration::ZERO; num_joycons],
-        }
-    }
-
-    /// Evaluates a track section's activity level.
-    ///
-    /// Counts notes and finds maximum amplitude within a time window.
-    ///
-    /// # Arguments
-    ///
-    /// * `commands` - The rumble commands to analyze
-    /// * `start_time` - Start of the evaluation window
-    /// * `window_size` - Duration of the evaluation window
-    ///
-    /// # Returns
-    ///
-    /// A tuple of `(note_count, max_amplitude)` within the window.
-    pub fn evaluate_track_section(
-        commands: &[RumbleCommand],
-        start_time: Duration,
-        window_size: Duration,
-    ) -> (usize, f32) {
-        let mut note_count = 0;
-        let mut max_amplitude: f32 = 0.0;
-        let mut current_time = Duration::ZERO;
-        let end_time = start_time + window_size;
-
-        for cmd in commands {
-            current_time += cmd.wait_before;
-            if current_time >= start_time && current_time <= end_time && cmd.amplitude > 0.0 {
-                note_count += 1;
-                max_amplitude = max_amplitude.max(cmd.amplitude);
-            }
-            if current_time > end_time {
-                break;
-            }
-        }
-        (note_count, max_amplitude)
-    }
-
-    /// Determines whether a JoyCon should switch from its current track to a new one.
-    ///
-    /// This method implements the track switching heuristics, considering:
-    /// - Time since last switch (minimum 2 seconds)
-    /// - Note activity in both tracks for the next 2 seconds
-    /// - Track scores and quality metrics
-    ///
-    /// # Arguments
-    ///
-    /// * `joycon_idx` - Index of the JoyCon considering the switch
-    /// * `current_track_idx` - Index of the track currently being played
-    /// * `target_track_idx` - Index of the proposed new track
-    /// * `command_index` - Current position in the track's command list
-    ///
-    /// # Returns
-    ///
-    /// `true` if the switch should occur, `false` otherwise.
-    ///
-    /// # Switching Criteria
-    ///
-    /// A switch is recommended when:
-    /// 1. At least 2 seconds have passed since the last switch
-    /// 2. The target track has significantly more notes coming up
-    /// 3. The target track's maximum amplitude is at least 0.3
-    /// 4. The target track's score is at least 1.5x the current track's score
-    pub fn should_switch_tracks(
-        &self,
-        joycon_idx: usize,
-        current_track_idx: usize,
-        target_track_idx: usize,
-        command_index: usize,
-    ) -> bool {
-        const MIN_SWITCH_INTERVAL: Duration = Duration::from_secs(2);
-        const MIN_NOTE_COUNT_FOR_SWITCH: usize = 3;
-        const MIN_SCORE_DIFF_FOR_SWITCH: f32 = 1.5;
-
-        // Check if enough time has passed since last switch
-        if self
-            .current_time
-            .saturating_sub(self.last_switch_times[joycon_idx])
-            < MIN_SWITCH_INTERVAL
-        {
-            return false;
-        }
-
-        let current_track = &self.tracks[current_track_idx];
-        let target_track = &self.tracks[target_track_idx];
-
-        // Evaluate both current and target tracks
-        let (current_notes, _current_max_amp) = Self::evaluate_track_section(
-            &current_track.commands[command_index..],
-            self.current_time,
-            Self::FUTURE_WINDOW_SIZE,
-        );
-
-        let target_start_idx = find_commands_at_time(&target_track.commands, self.current_time);
-        let (target_notes, target_max_amp) = Self::evaluate_track_section(
-            &target_track.commands[target_start_idx..],
-            self.current_time,
-            Self::FUTURE_WINDOW_SIZE,
-        );
-
-        // Compare track scores and activity
-        let activity_check = (target_notes > current_notes + 1
-            || (current_notes == 0 && target_notes >= MIN_NOTE_COUNT_FOR_SWITCH))
-            && target_max_amp >= 0.3;
-
-        if activity_check {
-            let current_score = current_track.metrics.calculate_score();
-            let target_score = target_track.metrics.calculate_score();
-            target_score > current_score * MIN_SCORE_DIFF_FOR_SWITCH
+    // Build a minimal TrackMetrics from the PartFeatures for backward compat.
+    let metrics = TrackMetrics {
+        track_index: part_index,
+        note_count: features.note_count,
+        is_percussion: features.is_drum,
+        total_duration: total_duration.as_secs_f32(),
+        note_density: features.notes_per_sec,
+        track_name: part.name.clone(),
+        track_type: if features.is_drum {
+            TrackType::Drums
+        } else if features.bass_bias > 0.5 {
+            TrackType::Bass
+        } else if features.melody_bias > 0.3 {
+            TrackType::Melody
+        } else if features.accompaniment_bias > 0.3 {
+            TrackType::Harmony
         } else {
-            false
-        }
-    }
+            TrackType::Unknown
+        },
+        ..TrackMetrics::default()
+    };
 
-    /// Records that a track switch occurred for the specified JoyCon.
-    ///
-    /// This updates the last switch time, which is used to enforce the
-    /// minimum interval between switches.
-    ///
-    /// # Arguments
-    ///
-    /// * `joycon_idx` - Index of the JoyCon that performed the switch
-    pub fn record_switch(&mut self, joycon_idx: usize) {
-        self.last_switch_times[joycon_idx] = self.current_time;
-    }
-
-    /// Updates the controller's current time position.
-    ///
-    /// Call this as playback progresses to keep the controller's time
-    /// synchronized with actual playback.
-    ///
-    /// # Arguments
-    ///
-    /// * `delta` - Amount of time that has elapsed
-    pub fn update_time(&mut self, delta: Duration) {
-        self.current_time += delta;
+    RumbleTrack {
+        commands,
+        total_duration,
+        switch_points,
+        track_index: part_index,
+        metrics,
     }
 }
 
-/// Parses MIDI data and converts it to rumble tracks.
+struct NoteEvent {
+    tick: u32,
+    track_idx: usize,
+    pitch: u8,
+    is_on: bool,
+}
+
+struct SkylinePeriod {
+    start_tick: u32,
+    end_tick: u32,
+    track_idx: usize,
+}
+
+/// Builds a pre-computed playback plan using the skyline algorithm,
+/// sourcing note events directly from [`Part`]s.
+///
+/// `candidate_parts` is a slice of `(part_index_into_all_parts, &Part)`
+/// whose rumble-track index corresponds to position in `rumble_tracks`.
+fn build_playback_plan_from_parts(
+    candidate_parts: &[&Part],
+    rumble_tracks: &[RumbleTrack],
+    all_features: &[PartFeatures],
+    candidate_feature_indices: &[usize],
+    num_joycons: usize,
+    ticks_per_beat: f32,
+    tempo_changes: &[TempoChange],
+) -> PlaybackPlan {
+    const WINDOW_SECS: f32 = 4.0;
+    const MIN_SECTION_SECS: f32 = 4.0;
+
+    let mut events: Vec<NoteEvent> = Vec::new();
+    let num_rumble_tracks = rumble_tracks.len();
+
+    for (rumble_idx, part) in candidate_parts.iter().enumerate() {
+        if part.is_drum {
+            continue;
+        }
+        for n in &part.notes {
+            events.push(NoteEvent {
+                tick: n.start_tick,
+                track_idx: rumble_idx,
+                pitch: n.pitch,
+                is_on: true,
+            });
+            events.push(NoteEvent {
+                tick: n.end_tick,
+                track_idx: rumble_idx,
+                pitch: n.pitch,
+                is_on: false,
+            });
+        }
+    }
+
+    events.sort_by_key(|e| e.tick);
+
+    if events.is_empty() {
+        return PlaybackPlan {
+            sections: vec![SectionAssignment {
+                start_time: Duration::ZERO,
+                track_indices: vec![0; num_joycons],
+            }],
+        };
+    }
+
+    // 2. Walk through events tracking which track holds the skyline (highest note).
+    let mut active_notes: Vec<BTreeSet<u8>> = vec![BTreeSet::new(); num_rumble_tracks];
+    let mut skyline_periods: Vec<SkylinePeriod> = Vec::new();
+    let mut prev_tick: u32 = 0;
+
+    for event in &events {
+        if event.tick > prev_tick {
+            let mut best_track = None;
+            let mut best_pitch = 0u8;
+            for (idx, notes) in active_notes.iter().enumerate() {
+                if let Some(&highest) = notes.iter().next_back() {
+                    if highest > best_pitch {
+                        best_pitch = highest;
+                        best_track = Some(idx);
+                    }
+                }
+            }
+            if let Some(winner) = best_track {
+                skyline_periods.push(SkylinePeriod {
+                    start_tick: prev_tick,
+                    end_tick: event.tick,
+                    track_idx: winner,
+                });
+            }
+        }
+
+        if event.is_on {
+            active_notes[event.track_idx].insert(event.pitch);
+        } else {
+            active_notes[event.track_idx].remove(&event.pitch);
+        }
+        prev_tick = event.tick;
+    }
+
+    // 3. Convert skyline periods to the time domain and aggregate into windows.
+    let total_ticks = events.last().map(|e| e.tick).unwrap_or(0);
+    let total_duration = ticks_to_duration(0, total_ticks, tempo_changes, ticks_per_beat);
+    let window_duration = Duration::from_secs_f32(WINDOW_SECS);
+
+    struct TimedPeriod {
+        start: Duration,
+        end: Duration,
+        track_idx: usize,
+    }
+    let timed_periods: Vec<TimedPeriod> = skyline_periods
+        .iter()
+        .map(|p| TimedPeriod {
+            start: ticks_to_duration(0, p.start_tick, tempo_changes, ticks_per_beat),
+            end: ticks_to_duration(0, p.end_tick, tempo_changes, ticks_per_beat),
+            track_idx: p.track_idx,
+        })
+        .collect();
+
+    let mut window_melodies: Vec<(Duration, usize)> = Vec::new();
+    let mut window_start = Duration::ZERO;
+
+    while window_start < total_duration {
+        let window_end = (window_start + window_duration).min(total_duration);
+
+        let mut track_durations: Vec<Duration> = vec![Duration::ZERO; num_rumble_tracks];
+        for period in &timed_periods {
+            let overlap_start = period.start.max(window_start);
+            let overlap_end = period.end.min(window_end);
+            if overlap_start < overlap_end {
+                track_durations[period.track_idx] += overlap_end - overlap_start;
+            }
+        }
+
+        let melody_idx = track_durations
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, &d)| d)
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+
+        window_melodies.push((window_start, melody_idx));
+        window_start = window_end;
+    }
+
+    // 4. Merge consecutive windows with the same melody winner into sections.
+    let mut raw_sections: Vec<(Duration, usize)> = Vec::new();
+    for &(time, melody) in &window_melodies {
+        if let Some(last) = raw_sections.last() {
+            if last.1 == melody {
+                continue;
+            }
+        }
+        raw_sections.push((time, melody));
+    }
+
+    // Apply hysteresis: absorb sections shorter than MIN_SECTION_SECS
+    // into the previous section.
+    let min_section = Duration::from_secs_f32(MIN_SECTION_SECS);
+    let mut stable_sections: Vec<(Duration, usize)> = Vec::new();
+
+    for i in 0..raw_sections.len() {
+        let section_end = if i + 1 < raw_sections.len() {
+            raw_sections[i + 1].0
+        } else {
+            total_duration
+        };
+        let section_duration = section_end.saturating_sub(raw_sections[i].0);
+
+        if section_duration >= min_section || stable_sections.is_empty() {
+            stable_sections.push(raw_sections[i]);
+        }
+    }
+
+    // 5. For each section, assign melody + complement tracks using SecondaryScore.
+    let sections: Vec<SectionAssignment> = stable_sections
+        .iter()
+        .enumerate()
+        .map(|(_, &(start_time, melody_idx))| {
+            let mut track_indices = vec![melody_idx];
+
+            for _ in 1..num_joycons {
+                let melody_feat_idx = candidate_feature_indices
+                    .get(melody_idx)
+                    .copied()
+                    .unwrap_or(0);
+                let primary_feat = &all_features[melody_feat_idx];
+
+                let complement = candidate_feature_indices
+                    .iter()
+                    .enumerate()
+                    .filter(|(ri, _)| !track_indices.contains(ri))
+                    .filter(|(_, &fi)| !all_features[fi].is_drum && all_features[fi].note_count > 0)
+                    .max_by(|(_, &fi_a), (_, &fi_b)| {
+                        let sa = secondary_score(&all_features[fi_a], primary_feat, all_features);
+                        let sb = secondary_score(&all_features[fi_b], primary_feat, all_features);
+                        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(ri, _)| ri)
+                    .unwrap_or(melody_idx);
+                track_indices.push(complement);
+            }
+
+            SectionAssignment {
+                start_time,
+                track_indices,
+            }
+        })
+        .collect();
+
+    println!("\n🎼 Playback Plan ({} sections):", sections.len());
+    for (i, section) in sections.iter().enumerate() {
+        let end = if i + 1 < sections.len() {
+            sections[i + 1].start_time
+        } else {
+            total_duration
+        };
+        let part_names: Vec<String> = section
+            .track_indices
+            .iter()
+            .map(|&idx| {
+                candidate_parts
+                    .get(idx)
+                    .and_then(|p| p.name.as_deref())
+                    .unwrap_or("unnamed")
+                    .to_string()
+            })
+            .collect();
+        println!(
+            "  Section {}: {:.1?} - {:.1?} → parts {:?} ({:?})",
+            i + 1,
+            section.start_time,
+            end,
+            section.track_indices,
+            part_names
+        );
+    }
+
+    PlaybackPlan { sections }
+}
+
+/// Parses MIDI data and converts it to rumble tracks with a playback plan.
 ///
 /// This is the main entry point for MIDI-to-rumble conversion. It handles
-/// the complete process of parsing, track selection, and conversion.
+/// parsing, part-based normalization and scoring, rumble conversion, and
+/// builds a [`PlaybackPlan`] using the skyline algorithm constrained to the
+/// top-scoring candidate parts.
 ///
 /// # Arguments
 ///
 /// * `midi_data` - Raw bytes of a MIDI file
-/// * `track_selections` - Optional manual track selection. Pass an empty `Vec`
-///   or a `Vec` of `None` values for automatic selection.
-///
-/// # Track Selection
-///
-/// If `track_selections` is empty or contains only `None` values, the function
-/// automatically selects tracks based on their scores. Tracks are scored on:
-/// - Note density (notes per second)
-/// - Melodic movement
-/// - Pitch range
-/// - Velocity variance
-/// - Track type (melody > harmony > bass > drums)
-///
-/// Percussion tracks (MIDI channel 10) are excluded from automatic selection.
+/// * `num_joycons` - Number of JoyCons that will play simultaneously
 ///
 /// # Returns
 ///
-/// A `Vec` of [`RumbleTrack`] objects, sorted by score (best first).
+/// A tuple of:
+/// - All converted [`RumbleTrack`]s (one per candidate part)
+/// - A [`PlaybackPlan`] with per-section track assignments
+/// - A [`PartSelection`] identifying primary/secondary and ranked candidates
 ///
 /// # Errors
 ///
 /// - [`ParseError::MidiError`] - Invalid MIDI file format
-/// - [`ParseError::NoTracks`] - No playable tracks found
-///
-/// # Example
-///
-/// ```no_run
-/// use musical_joycons::midi::parse_midi_to_rumble;
-///
-/// let midi_data = std::fs::read("song.mid")?;
-///
-/// // Automatic track selection
-/// let tracks = parse_midi_to_rumble(&midi_data, vec![])?;
-///
-/// // Manual track selection (use tracks 0 and 2)
-/// let tracks = parse_midi_to_rumble(&midi_data, vec![Some(0), Some(2)])?;
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
+/// - [`ParseError::NoTracks`] - No playable parts found
 pub fn parse_midi_to_rumble(
     midi_data: &[u8],
-    track_selections: Vec<Option<usize>>,
-) -> Result<Vec<RumbleTrack>, ParseError> {
+    num_joycons: usize,
+) -> Result<(Vec<RumbleTrack>, PlaybackPlan, PartSelection), ParseError> {
     let smf = Smf::parse(midi_data)?;
-    let _num_joycons = track_selections.len();
 
     let ticks_per_beat = match smf.header.timing {
         midly::Timing::Metrical(timing) => timing.as_int() as f32,
@@ -663,163 +661,137 @@ pub fn parse_midi_to_rumble(
     };
 
     let tempo_changes = collect_tempo_changes(&smf);
-    let mut track_metrics: Vec<TrackMetrics> = smf
-        .tracks
+
+    // --- Part-based normalization ---
+    let parts = normalize_to_parts(&smf);
+    println!("\n🎵 Normalized into {} parts", parts.len());
+
+    let song_end_tick = parts
+        .iter()
+        .flat_map(|p| p.notes.iter())
+        .map(|n| n.end_tick)
+        .max()
+        .unwrap_or(0);
+
+    let all_features: Vec<PartFeatures> = parts
+        .iter()
+        .map(|p| analyze_part(p, ticks_per_beat, DEFAULT_TEMPO, song_end_tick))
+        .collect();
+
+    for (i, (part, feat)) in parts.iter().zip(all_features.iter()).enumerate() {
+        println!(
+            "  Part {} (ch={}, prog={}): {} notes, active={:.2}, mono={:.2}, chord={:.1}, p75={:.0}, drum={}{}",
+            i,
+            part.key.channel,
+            part.key.program,
+            feat.note_count,
+            feat.active_ratio,
+            feat.monophony_ratio,
+            feat.chordiness,
+            feat.p75_pitch,
+            feat.is_drum,
+            part.name
+                .as_ref()
+                .map(|n| format!(", name={n}"))
+                .unwrap_or_default()
+        );
+    }
+
+    // --- Score & select primary / secondary ---
+    let selection = select_parts(&all_features).ok_or(ParseError::NoTracks)?;
+
+    println!(
+        "\n🎯 Selected primary=Part {} ({}), secondary=Part {} ({})",
+        selection.primary,
+        parts[selection.primary]
+            .name
+            .as_deref()
+            .unwrap_or("unnamed"),
+        selection.secondary,
+        parts[selection.secondary]
+            .name
+            .as_deref()
+            .unwrap_or("unnamed"),
+    );
+
+    // Build candidate pool: primary + secondary + next few from primary_candidates.
+    const MAX_CANDIDATES: usize = 6;
+    let mut candidate_indices: Vec<usize> = Vec::new();
+    candidate_indices.push(selection.primary);
+    if selection.secondary != selection.primary {
+        candidate_indices.push(selection.secondary);
+    }
+    for &idx in &selection.primary_candidates {
+        if candidate_indices.len() >= MAX_CANDIDATES {
+            break;
+        }
+        if !candidate_indices.contains(&idx) {
+            candidate_indices.push(idx);
+        }
+    }
+
+    // Convert candidate parts to RumbleTracks.
+    let candidate_parts: Vec<&Part> = candidate_indices.iter().map(|&i| &parts[i]).collect();
+    let mut rumble_tracks: Vec<RumbleTrack> = candidate_indices
         .iter()
         .enumerate()
-        .map(|(idx, track)| {
-            let mut metrics = analyze_track(track, ticks_per_beat, DEFAULT_TEMPO);
-            metrics.track_index = idx;
-            metrics
+        .map(|(rumble_idx, &part_idx)| {
+            convert_part_to_rumble(
+                &parts[part_idx],
+                rumble_idx,
+                &all_features[part_idx],
+                &tempo_changes,
+                ticks_per_beat,
+            )
         })
         .collect();
 
-    println!("\n🎵 Found {} tracks in MIDI file", track_metrics.len());
-
-    let selected_tracks: Vec<&TrackMetrics> =
-        if track_selections.is_empty() || track_selections.iter().all(Option::is_none) {
-            // Sort all tracks by score
-            track_metrics.sort_by(|a, b| {
-                b.calculate_score()
-                    .partial_cmp(&a.calculate_score())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-            // Take all valid tracks (not just num_joycons)
-            track_metrics
-                .iter()
-                .filter(|m| !m.is_percussion && m.note_count > 0)
-                .collect()
-        } else {
-            // Handle manual selection
-            track_selections
-                .iter()
-                .filter_map(|&selection| selection.and_then(|idx| track_metrics.get(idx)))
-                .collect()
-        };
-
-    if selected_tracks.is_empty() {
-        return Err(ParseError::NoTracks);
-    }
-
-    let mut rumble_tracks: Vec<RumbleTrack> = selected_tracks
+    // Normalize amplitudes across all rumble tracks.
+    let max_amp = rumble_tracks
         .iter()
-        .map(|metrics| {
-            convert_track_with_tempo(
-                &smf.tracks[metrics.track_index],
-                &tempo_changes,
-                ticks_per_beat,
-                metrics.track_index,
-                (*metrics).clone(), // Dereference and clone the metrics
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    // First, find the global maximum velocity
-    let mut max_velocity = 1.0f32;
-    for track in smf.tracks.iter() {
-        for event in track.iter() {
-            if let TrackEventKind::Midi {
-                message: midly::MidiMessage::NoteOn { vel, .. },
-                ..
-            } = event.kind
-            {
-                max_velocity = max_velocity.max(vel.as_int() as f32 / 127.0);
+        .flat_map(|t| t.commands.iter())
+        .map(|c| c.amplitude)
+        .fold(1.0f32, f32::max);
+    if max_amp > 1.0 {
+        for track in &mut rumble_tracks {
+            for cmd in &mut track.commands {
+                cmd.amplitude /= max_amp;
             }
         }
     }
 
-    // Normalize all amplitudes in the tracks
-    for track in &mut rumble_tracks {
-        for cmd in &mut track.commands {
-            cmd.amplitude /= max_velocity;
-        }
-    }
-
-    // Update switch points with multiple alternative tracks
-    for i in 0..rumble_tracks.len() {
-        let current_track_idx = rumble_tracks[i].track_index;
-        println!(
-            "🔍 Finding alternative tracks for track {}",
-            current_track_idx + 1
-        );
-
-        // First, collect all potential alternative tracks and their activity periods
-        type AlternativeTrack = (usize, f32, Vec<(Duration, bool)>);
-        let alternative_tracks: Vec<AlternativeTrack> = track_metrics
+    // Remap PartSelection indices from all-parts space to rumble-tracks space.
+    let remap = |orig: usize| -> usize {
+        candidate_indices
             .iter()
-            .enumerate()
-            .filter(|(idx, m)| {
-                !m.is_percussion && m.note_count > 0 && *idx != current_track_idx
-                // Don't include current track
-            })
-            .map(|(idx, m)| {
-                let score = m.calculate_score();
-                println!("  - Track {} score: {:.2}", idx + 1, score);
+            .position(|&i| i == orig)
+            .unwrap_or(0)
+    };
+    let remapped_selection = PartSelection {
+        primary: remap(selection.primary),
+        secondary: remap(selection.secondary),
+        primary_candidates: selection
+            .primary_candidates
+            .iter()
+            .filter_map(|&i| candidate_indices.iter().position(|&c| c == i))
+            .collect(),
+        secondary_candidates: selection
+            .secondary_candidates
+            .iter()
+            .filter_map(|&i| candidate_indices.iter().position(|&c| c == i))
+            .collect(),
+    };
 
-                // For each track, create an activity map
-                let activity =
-                    if let Some(track) = rumble_tracks.iter().find(|t| t.track_index == idx) {
-                        let mut activity_periods = Vec::new();
-                        let mut current_time = Duration::ZERO;
-                        for cmd in &track.commands {
-                            current_time += cmd.wait_before;
-                            activity_periods.push((current_time, cmd.amplitude > 0.0));
-                        }
-                        activity_periods
-                    } else {
-                        Vec::new()
-                    };
+    // Build the playback plan using skyline, constrained to the candidate pool.
+    let plan = build_playback_plan_from_parts(
+        &candidate_parts,
+        &rumble_tracks,
+        &all_features,
+        &candidate_indices,
+        num_joycons,
+        ticks_per_beat,
+        &tempo_changes,
+    );
 
-                (idx, score, activity)
-            })
-            .collect();
-
-        // Now update switch points
-        for switch_point in &mut rumble_tracks[i].switch_points {
-            let mut available_tracks: Vec<(usize, f32)> = alternative_tracks
-                .iter()
-                .filter(|(_idx, _score, activity)| {
-                    // Find tracks that will be active at or soon after the switch point
-                    let mut is_active = false;
-                    let look_ahead = Duration::from_millis(500);
-
-                    for (time, active) in activity.iter() {
-                        if *time >= switch_point.time
-                            && *time <= switch_point.time + look_ahead
-                            && *active
-                        {
-                            is_active = true;
-                            break;
-                        }
-                    }
-                    is_active
-                })
-                .map(|(idx, score, _)| (*idx, *score))
-                .collect();
-
-            // Sort available tracks by score
-            available_tracks
-                .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-            if let Some((best_idx, score)) = available_tracks.first() {
-                println!(
-                    "  ✨ At {:?}: Best alternative for track {} is track {} (score: {:.2})",
-                    switch_point.time,
-                    current_track_idx + 1,
-                    best_idx + 1,
-                    score
-                );
-                switch_point.alternative_track_index = *best_idx;
-            } else {
-                println!(
-                    "  ⚠️ No active alternatives found for track {} at {:?}",
-                    current_track_idx + 1,
-                    switch_point.time
-                );
-            }
-        }
-    }
-
-    Ok(rumble_tracks)
+    Ok((rumble_tracks, plan, remapped_selection))
 }
