@@ -69,16 +69,17 @@
 //! - Variable tick resolutions
 //! - Proper note-on/note-off pairing
 
+pub mod parts;
 mod playback;
-mod rumble;
-mod track_analysis;
-mod track_types;
+pub mod rumble;
+pub mod scoring;
+pub mod track_analysis;
+pub mod track_types;
 
 // Re-export public types
-pub use playback::play_midi_file;
-pub use rumble::{
-    parse_midi_to_rumble, ParseError, RumbleCommand, RumbleTrack, TrackMergeController,
-    TrackSwitchPoint,
-};
-pub use track_analysis::analyze_track;
-pub use track_types::{TrackMetrics, TrackType};
+pub use parts::{NoteObject, Part, PartKey};
+pub use playback::{play_midi_file, JoyConBinding, JoyConSide};
+pub use rumble::{parse_midi_to_rumble, ParseError, RumbleCommand, RumbleTrack, TrackSwitchPoint};
+pub use scoring::PartSelection;
+pub use track_analysis::{analyze_part, analyze_track, PartFeatures};
+pub use track_types::{PlaybackPlan, SectionAssignment, TrackMetrics, TrackType};

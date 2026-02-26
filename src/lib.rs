@@ -113,5 +113,8 @@ pub mod midi;
 /// ```
 pub mod prelude {
     pub use crate::joycon::{JoyCon, JoyConError, JoyConManager, JoyConType};
-    pub use crate::midi::{play_midi_file, RumbleCommand, RumbleTrack, TrackMetrics, TrackType};
+    pub use crate::midi::{
+        play_midi_file, Part, PartFeatures, PartKey, PartSelection, RumbleCommand, RumbleTrack,
+        TrackMetrics, TrackType,
+    };
 }

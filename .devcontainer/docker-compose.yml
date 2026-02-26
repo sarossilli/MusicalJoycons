@@ -1,0 +1,19 @@
+services:
+  musical-joycons:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    privileged: true
+    network_mode: host
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - NET_RAW
+    volumes:
+      - ..:/workspaces/MusicalJoycons:cached
+      - /var/run/dbus:/var/run/dbus
+      - /lib/modules:/lib/modules:ro
+    command: sleep infinity

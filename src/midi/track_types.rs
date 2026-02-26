@@ -1,17 +1,9 @@
-//! MIDI track type detection and scoring.
+//! MIDI track type detection, scoring, and playback planning.
 //!
-//! This module provides the [`TrackMetrics`] struct for analyzing MIDI tracks
-//! and the [`TrackType`] enum for classifying track musical roles.
-//!
-//! # Track Scoring
-//!
-//! Tracks are scored based on how well they translate to rumble playback.
-//! The scoring algorithm considers:
-//!
-//! - **Note density**: Tracks with moderate density (2-4 notes/sec) score higher
-//! - **Melodic movement**: Some pitch variation is preferred
-//! - **Velocity variance**: Dynamic tracks are more interesting
-//! - **Track type**: Melody and harmony tracks score higher than drums
+//! This module provides the [`TrackMetrics`] struct for analyzing MIDI tracks,
+//! the [`TrackType`] enum for classifying track musical roles, and the
+//! [`PlaybackPlan`] / [`SectionAssignment`] types for pre-computed track
+//! assignments based on skyline melody detection.
 //!
 //! # Track Type Detection
 //!
@@ -19,6 +11,8 @@
 //! 1. MIDI program number (instrument)
 //! 2. Track/instrument name keywords
 //! 3. Musical characteristics (pitch range, density)
+
+use std::time::Duration;
 
 /// Metrics and analysis data for a MIDI track.
 ///
@@ -109,6 +103,50 @@ pub enum TrackType {
     Vocals,
     /// Could not determine track type
     Unknown,
+}
+
+/// A section of the song with fixed JoyCon-to-track assignments.
+///
+/// Each section represents a contiguous period where the melody (and complement)
+/// stay on the same tracks, as determined by skyline analysis.
+#[derive(Debug, Clone)]
+pub struct SectionAssignment {
+    /// Time at which this section begins.
+    pub start_time: Duration,
+    /// Track index assigned to each JoyCon for this section.
+    /// Index 0 is the melody track, index 1+ are complements.
+    pub track_indices: Vec<usize>,
+}
+
+/// Pre-computed playback plan mapping song sections to track assignments.
+///
+/// Built by analyzing the full MIDI file with the skyline algorithm before
+/// playback begins. During playback, JoyCon threads follow this plan instead
+/// of re-ranking tracks in real time.
+#[derive(Debug, Clone)]
+pub struct PlaybackPlan {
+    /// Ordered list of sections sorted by `start_time`.
+    pub sections: Vec<SectionAssignment>,
+}
+
+impl PlaybackPlan {
+    /// Returns the track index assigned to a JoyCon at the given time.
+    pub fn track_for(&self, joycon_idx: usize, time: Duration) -> usize {
+        self.sections
+            .iter()
+            .rev()
+            .find(|s| s.start_time <= time)
+            .and_then(|s| s.track_indices.get(joycon_idx).copied())
+            .unwrap_or(0)
+    }
+
+    /// Returns the start time of the next section after `time`, if any.
+    pub fn next_section_time(&self, time: Duration) -> Option<Duration> {
+        self.sections
+            .iter()
+            .find(|s| s.start_time > time)
+            .map(|s| s.start_time)
+    }
 }
 
 pub(crate) struct TrackWeights {
