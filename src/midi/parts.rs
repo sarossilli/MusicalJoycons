@@ -289,10 +289,7 @@ mod tests {
 
     #[test]
     fn marks_drums_channel_9() {
-        let data = make_smf(vec![vec![
-            note_on(0, 9, 36, 100),
-            note_off(480, 9, 36),
-        ]]);
+        let data = make_smf(vec![vec![note_on(0, 9, 36, 100), note_off(480, 9, 36)]]);
         let smf = Smf::parse(&data).unwrap();
         let parts = normalize_to_parts(&smf);
 

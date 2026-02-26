@@ -39,7 +39,7 @@ fn normalize(value: f32, all: &[f32]) -> f32 {
 
 /// Build a Vec of a single field extracted from all features.
 fn collect_field(features: &[PartFeatures], f: impl Fn(&PartFeatures) -> f32) -> Vec<f32> {
-    features.iter().map(|pf| f(pf)).collect()
+    features.iter().map(f).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -86,11 +86,7 @@ pub fn primary_score(feat: &PartFeatures, all: &[PartFeatures]) -> f32 {
 
 /// Compute the "accompaniment / complement" score for one part given
 /// the already-chosen primary.
-pub fn secondary_score(
-    feat: &PartFeatures,
-    primary: &PartFeatures,
-    all: &[PartFeatures],
-) -> f32 {
+pub fn secondary_score(feat: &PartFeatures, primary: &PartFeatures, all: &[PartFeatures]) -> f32 {
     if feat.is_drum {
         return -100.0;
     }
@@ -186,7 +182,12 @@ pub fn select_parts(features: &[PartFeatures]) -> Option<PartSelection> {
         .iter()
         .filter(|&&i| i != primary_idx)
         .filter(|&&i| !are_near_duplicates(&features[i], &features[primary_idx]))
-        .map(|&i| (i, secondary_score(&features[i], &features[primary_idx], features)))
+        .map(|&i| {
+            (
+                i,
+                secondary_score(&features[i], &features[primary_idx], features),
+            )
+        })
         .collect();
     secondary_ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -214,8 +215,7 @@ pub fn select_parts(features: &[PartFeatures]) -> Option<PartSelection> {
 
     // Build candidate lists for cycling.
     let primary_candidates: Vec<usize> = primary_ranked.iter().map(|&(i, _)| i).collect();
-    let mut secondary_candidates: Vec<usize> =
-        secondary_ranked.iter().map(|&(i, _)| i).collect();
+    let mut secondary_candidates: Vec<usize> = secondary_ranked.iter().map(|&(i, _)| i).collect();
     if secondary_candidates.is_empty() {
         secondary_candidates.push(primary_idx);
     }
@@ -311,7 +311,10 @@ mod tests {
         let all = vec![melody_features(), chords_features(), drum_features()];
         let ps = primary_score(&all[0], &all);
         let cs = primary_score(&all[1], &all);
-        assert!(ps > cs, "melody primary score ({ps}) should > chords ({cs})");
+        assert!(
+            ps > cs,
+            "melody primary score ({ps}) should > chords ({cs})"
+        );
     }
 
     #[test]

@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 
@@ -232,9 +232,8 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
     // Spawn the keyboard input thread.
     let input_handle = spawn_input_thread(Arc::clone(&binding), Arc::clone(&quit));
 
-    let mut handles: Vec<
-        thread::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
-    > = Vec::new();
+    let mut handles: Vec<thread::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>> =
+        Vec::new();
 
     for (joycon_idx, mut joycon) in joycons.into_iter().enumerate() {
         let joycon_signal = Arc::clone(&start_signal);
@@ -249,13 +248,16 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                 thread::sleep(Duration::from_millis(1));
             }
 
+            let playback_start = Instant::now();
+            let mut last_write = playback_start;
+
             // Resolve which track this Joy-Con should start on.
             let mut current_track_idx = joycon_binding
                 .lock()
                 .map(|b| b.track_for_side(side))
                 .unwrap_or(0);
             let mut command_index = 0;
-            let mut current_time = Duration::ZERO;
+            let mut scheduled_time = Duration::ZERO;
             let mut pending_track_switch: Option<usize> = None;
             let mut next_section_time = joycon_plan.next_section_time(Duration::ZERO);
 
@@ -271,18 +273,20 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                     break;
                 }
 
+                let current_time = playback_start.elapsed();
+
                 // Check if the binding changed (swap / cycle).
                 let desired_track = joycon_binding
                     .lock()
                     .map(|b| b.track_for_side(side))
                     .unwrap_or(current_track_idx);
 
-                if desired_track != current_track_idx
-                    && desired_track < joycon_tracks.len()
-                {
+                if desired_track != current_track_idx && desired_track < joycon_tracks.len() {
                     current_track_idx = desired_track;
-                    command_index =
-                        find_commands_at_time(&joycon_tracks[current_track_idx].commands, current_time);
+                    command_index = find_commands_at_time(
+                        &joycon_tracks[current_track_idx].commands,
+                        current_time,
+                    );
                     pending_track_switch = None;
                 }
 
@@ -345,10 +349,26 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                     }
                 }
 
+                // Sleep until the scheduled fire time, absorbing any prior
+                // oversleep or HID-I/O overhead automatically.
                 if !cmd.wait_before.is_zero() {
-                    thread::sleep(cmd.wait_before);
-                    current_time += cmd.wait_before;
+                    scheduled_time += cmd.wait_before;
+                    let target = playback_start + scheduled_time;
+                    let now = Instant::now();
+                    if target > now {
+                        thread::sleep(target - now);
+                    }
                 }
+
+                // Coalesce consecutive zero-wait commands (same-tick events).
+                // The JoyCon plays one frequency at a time, so only the last
+                // state at each tick is audible.
+                while command_index + 1 < track.commands.len()
+                    && track.commands[command_index + 1].wait_before.is_zero()
+                {
+                    command_index += 1;
+                }
+                let cmd = &track.commands[command_index];
 
                 if cmd.amplitude > 0.0 {
                     println!(
@@ -356,11 +376,19 @@ pub fn play_midi_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error + S
                         joycon_idx + 1,
                         cmd.frequency,
                         cmd.amplitude,
-                        current_time.as_secs_f32()
+                        playback_start.elapsed().as_secs_f32()
                     );
                 }
 
+                // Throttle HID writes to avoid overwhelming the USB pipe.
+                const MIN_HID_INTERVAL: Duration = Duration::from_millis(2);
+                let since_last = last_write.elapsed();
+                if since_last < MIN_HID_INTERVAL {
+                    thread::sleep(MIN_HID_INTERVAL - since_last);
+                }
+
                 joycon.rumble(cmd.frequency, cmd.amplitude)?;
+                last_write = Instant::now();
                 command_index += 1;
             }
 

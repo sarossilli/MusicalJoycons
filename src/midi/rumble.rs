@@ -25,7 +25,7 @@ use midly::{Smf, TrackEventKind};
 use thiserror::Error;
 
 use super::parts::{normalize_to_parts, Part};
-use super::scoring::{select_parts, secondary_score, PartSelection};
+use super::scoring::{secondary_score, select_parts, PartSelection};
 use super::track_analysis::{analyze_part, PartFeatures};
 use super::track_types::{PlaybackPlan, SectionAssignment, TrackMetrics, TrackType};
 
@@ -161,13 +161,25 @@ struct TempoChange {
     tempo: u32, // In microseconds per beat
 }
 
-const BASE_FREQUENCY: f32 = 880.0; // A5 note frequency (up one octave from A4)
-const MIDI_A4_NOTE: i32 = 69; // MIDI note number for A4
-const DEFAULT_TEMPO: u32 = 500_000; // Default tempo (120 BPM)
-const SILENCE_THRESHOLD: Duration = Duration::from_millis(300); // Reduced from 500ms
+const MIDI_A4_NOTE: i32 = 69;
+const DEFAULT_TEMPO: u32 = 500_000; // 120 BPM
+const SILENCE_THRESHOLD: Duration = Duration::from_millis(300);
 
+const RUMBLE_FREQ_MIN: f32 = 400.0;
+const RUMBLE_FREQ_MAX: f32 = 1252.0;
+
+/// Convert a MIDI note number to a frequency within the JoyCon rumble range.
+/// Notes below [`RUMBLE_FREQ_MIN`] are octave-shifted up; notes above
+/// [`RUMBLE_FREQ_MAX`] are octave-shifted down.
 fn note_to_frequency(note: i32) -> f32 {
-    BASE_FREQUENCY * 2.0f32.powf((note - MIDI_A4_NOTE - 12) as f32 / 12.0)
+    let mut freq = 440.0 * 2.0f32.powf((note - MIDI_A4_NOTE) as f32 / 12.0);
+    while freq < RUMBLE_FREQ_MIN {
+        freq *= 2.0;
+    }
+    while freq > RUMBLE_FREQ_MAX {
+        freq *= 0.5;
+    }
+    freq
 }
 
 fn collect_tempo_changes(smf: &Smf) -> Vec<TempoChange> {
@@ -201,27 +213,27 @@ fn ticks_to_duration(
     tempo_changes: &[TempoChange],
     ticks_per_beat: f32,
 ) -> Duration {
-    let mut total_micros = 0.0;
+    let mut total_micros: f64 = 0.0;
     let mut current_tick = start_tick;
     let mut tempo_idx = 0;
+    let tpb = ticks_per_beat as f64;
 
     while current_tick < end_tick && tempo_idx < tempo_changes.len() {
-        let current_tempo = tempo_changes[tempo_idx].tempo as f32;
+        let current_tempo = tempo_changes[tempo_idx].tempo as f64;
         let next_change_tick = if tempo_idx + 1 < tempo_changes.len() {
             tempo_changes[tempo_idx + 1].time
         } else {
             end_tick
         };
 
-        let ticks_in_segment = (end_tick.min(next_change_tick) - current_tick) as f32;
-        let micros_per_tick = current_tempo / ticks_per_beat;
-        total_micros += ticks_in_segment * micros_per_tick;
+        let ticks_in_segment = (end_tick.min(next_change_tick) - current_tick) as f64;
+        total_micros += ticks_in_segment * (current_tempo / tpb);
 
         current_tick = next_change_tick;
         tempo_idx += 1;
     }
 
-    Duration::from_micros(total_micros as u64)
+    Duration::from_secs_f64(total_micros / 1_000_000.0)
 }
 
 fn find_silent_periods(commands: &[RumbleCommand]) -> Vec<(Duration, Duration)> {
@@ -339,12 +351,7 @@ fn convert_part_to_rumble(
         }
     }
 
-    let final_tick = part
-        .notes
-        .iter()
-        .map(|n| n.end_tick)
-        .max()
-        .unwrap_or(0);
+    let final_tick = part.notes.iter().map(|n| n.end_tick).max().unwrap_or(0);
     let total_duration = ticks_to_duration(0, final_tick, tempo_changes, ticks_per_beat);
 
     let silent_periods = find_silent_periods(&commands);
@@ -562,8 +569,7 @@ fn build_playback_plan_from_parts(
     // 5. For each section, assign melody + complement tracks using SecondaryScore.
     let sections: Vec<SectionAssignment> = stable_sections
         .iter()
-        .enumerate()
-        .map(|(_, &(start_time, melody_idx))| {
+        .map(|&(start_time, melody_idx)| {
             let mut track_indices = vec![melody_idx];
 
             for _ in 1..num_joycons {

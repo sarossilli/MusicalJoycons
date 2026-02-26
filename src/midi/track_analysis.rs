@@ -77,7 +77,11 @@ use super::track_types::TrackMetrics;
 /// }
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn analyze_track(track: &[midly::TrackEvent], ticks_per_beat: f32, default_tempo: u32) -> TrackMetrics {
+pub fn analyze_track(
+    track: &[midly::TrackEvent],
+    ticks_per_beat: f32,
+    default_tempo: u32,
+) -> TrackMetrics {
     let mut metrics = TrackMetrics::default();
     let mut active_notes: HashMap<u8, f32> = HashMap::new();
     let mut note_pitches = Vec::new();
@@ -295,21 +299,21 @@ fn percentile(sorted: &[f32], p: f32) -> f32 {
 /// Computes GM-program-based instrument priors: (melody_bias, accompaniment_bias, bass_bias).
 fn instrument_priors(program: u8) -> (f32, f32, f32) {
     match program {
-        0..=7 => (0.3, 0.3, 0.0),       // Piano – could be either
-        8..=15 => (0.0, 0.4, 0.0),       // Chromatic Percussion
-        16..=23 => (0.0, 0.5, 0.0),      // Organ
-        24..=31 => (0.2, 0.4, 0.0),      // Guitar
-        32..=39 => (0.0, 0.0, 0.8),      // Bass
-        40..=47 => (0.1, 0.5, 0.0),      // Strings
-        48..=55 => (0.1, 0.5, 0.0),      // Ensemble
-        56..=63 => (0.6, 0.0, 0.0),      // Brass
-        64..=71 => (0.6, 0.0, 0.0),      // Reed / Sax
-        72..=79 => (0.6, 0.0, 0.0),      // Pipe / Flute
-        80..=87 => (0.7, 0.0, 0.0),      // Synth Lead
-        88..=95 => (0.0, 0.6, 0.0),      // Synth Pad
-        96..=103 => (0.0, 0.4, 0.0),     // Synth Effects
-        104..=111 => (0.5, 0.1, 0.0),    // Ethnic
-        112..=119 => (0.0, 0.0, 0.0),    // Percussive (handled by is_drum)
+        0..=7 => (0.3, 0.3, 0.0),     // Piano – could be either
+        8..=15 => (0.0, 0.4, 0.0),    // Chromatic Percussion
+        16..=23 => (0.0, 0.5, 0.0),   // Organ
+        24..=31 => (0.2, 0.4, 0.0),   // Guitar
+        32..=39 => (0.0, 0.0, 0.8),   // Bass
+        40..=47 => (0.1, 0.5, 0.0),   // Strings
+        48..=55 => (0.1, 0.5, 0.0),   // Ensemble
+        56..=63 => (0.6, 0.0, 0.0),   // Brass
+        64..=71 => (0.6, 0.0, 0.0),   // Reed / Sax
+        72..=79 => (0.6, 0.0, 0.0),   // Pipe / Flute
+        80..=87 => (0.7, 0.0, 0.0),   // Synth Lead
+        88..=95 => (0.0, 0.6, 0.0),   // Synth Pad
+        96..=103 => (0.0, 0.4, 0.0),  // Synth Effects
+        104..=111 => (0.5, 0.1, 0.0), // Ethnic
+        112..=119 => (0.0, 0.0, 0.0), // Percussive (handled by is_drum)
         _ => (0.0, 0.0, 0.0),
     }
 }
