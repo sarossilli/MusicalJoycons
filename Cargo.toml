@@ -1,6 +1,6 @@
 [package]
 name = "musical-joycons"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Play MIDI files through Nintendo JoyCon rumble motors"
 license = "MIT"
